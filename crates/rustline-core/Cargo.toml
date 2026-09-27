@@ -1,0 +1,23 @@
+[package]
+name = "rustline-core"
+description = "SIP/VoIP core engine — registration, calls, RTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+
+# Digest authentication (RFC 2617) — MD5
+md-5 = "0.10"
+hex = "0.4"
+
+# Unique identifiers for Call-ID, branch, tags
+rand = "0.8"
+
+[[example]]
+name = "test_register"
+path = "examples/test_register.rs"
