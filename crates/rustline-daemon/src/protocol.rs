@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A message sent by a WebSocket client.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ClientMessage {
@@ -153,6 +154,7 @@ pub fn parse_transport(s: &str) -> Result<TransportType, String> {
 /// Convert a [`ClientMessage`] into a [`CoreCommand`] (where applicable).
 ///
 /// Returns `None` for `Auth` (handled separately by the session layer).
+#[allow(dead_code)]
 pub fn client_message_to_command(
     msg: ClientMessage,
 ) -> Result<Option<(Option<String>, CoreCommand)>, ResponseMessage> {

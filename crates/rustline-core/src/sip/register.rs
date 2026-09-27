@@ -220,11 +220,13 @@ pub async fn do_unregister(
         transport_param,
         None,
     );
-    // Override the Expires header
+    // Override the Contact and Expires headers per RFC 3261 §10.2.2
+    msg.remove_headers("Contact");
+    msg.add_header("Contact", "*");
     msg.remove_headers("Expires");
     msg.add_header("Expires", "0");
 
-    info!("sending UNREGISTER (Expires: 0)");
+    info!("sending UNREGISTER (Contact: *, Expires: 0)");
     transport.send_to(&msg.to_bytes(), remote_addr).await?;
 
     // We attempt to receive a response but don't fail hard if it times out
@@ -258,10 +260,16 @@ pub async fn do_unregister(
                             transport_param,
                             Some(&digest),
                         );
+                        msg2.remove_headers("Contact");
+                        msg2.add_header("Contact", "*");
                         msg2.remove_headers("Expires");
                         msg2.add_header("Expires", "0");
                         transport.send_to(&msg2.to_bytes(), remote_addr).await?;
-                        let _ = recv_response(transport, RESPONSE_TIMEOUT).await;
+                        if let Ok(final_resp) = recv_response(transport, RESPONSE_TIMEOUT).await {
+                            let final_status = final_resp.status_code().unwrap_or(0);
+                            info!(status = final_status, "authenticated unregister response received");
+                            return Ok(());
+                        }
                     }
                 }
             }
