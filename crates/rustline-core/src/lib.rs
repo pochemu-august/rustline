@@ -16,5 +16,6 @@
 pub mod account;
 pub mod call;
 pub mod engine;
+pub mod sip;
 
 pub use engine::Engine;

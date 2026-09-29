@@ -26,7 +26,7 @@ tokio-tungstenite = "0.26"
 futures-util = "0.3"
 
 # SIP protocol
-rsip = "0.6"
+rsip = "0.4"
 
 # Logging
 tracing = "0.1"
@@ -38,3 +38,6 @@ anyhow = "1"
 
 # UUID for call IDs
 uuid = { version = "1", features = ["v4"] }
+
+# Crypto (Digest Auth MD5)
+md-5 = "0.10"

@@ -13,4 +13,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-# rsip = { workspace = true }   # TODO: enable when SIP transport layer is implemented
+rsip = { workspace = true }
+md-5 = { workspace = true }
+anyhow = { workspace = true }
