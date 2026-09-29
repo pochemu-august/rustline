@@ -186,7 +186,7 @@ Clients communicate with the daemon over WebSocket at `ws://127.0.0.1:7890`.
 
 <p align="center">
   <a href="https://github.com/pochemu-august/rustline">
-    <img src="https://github-readme-activity-graph.vercel.app/graph?username=pochemu-august&repo=rustline&theme=tokyo-night&area=true&hide_border=true&radius=12" alt="Commit Activity Graph" width="100%">
+    <img src="https://raw.githubusercontent.com/pochemu-august/rustline/output/activity-graph.svg" alt="Commit Activity Graph" width="100%">
   </a>
 </p>
 
