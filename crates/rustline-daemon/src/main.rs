@@ -14,7 +14,7 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
@@ -48,7 +48,10 @@ async fn main() -> Result<()> {
         .init();
 
     info!("rustline-daemon v{}", env!("CARGO_PKG_VERSION"));
-    info!("Media subsystem available: {}", rustline_media::is_available());
+    info!(
+        "Media subsystem available: {}",
+        rustline_media::is_available()
+    );
 
     // Create the engine ↔ daemon event channel.
     let (event_tx, event_rx) = mpsc::unbounded_channel::<EngineEvent>();
@@ -205,43 +208,31 @@ async fn process_request(state: &AppState, text: &str) -> Value {
         let mut engine = state.engine.lock().await;
 
         match request.method.as_str() {
-            "register" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_register(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
+            "register" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_register(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
             "unregister" => engine.handle_unregister().await,
-            "dial" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_dial(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
-            "answer" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_answer(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
-            "hangup" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_hangup(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
-            "hold" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_hold(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
-            "dtmf" => {
-                match serde_json::from_value(request.params) {
-                    Ok(params) => engine.handle_dtmf(params).await,
-                    Err(e) => Err(format!("Invalid params: {e}")),
-                }
-            }
+            "dial" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_dial(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
+            "answer" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_answer(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
+            "hangup" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_hangup(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
+            "hold" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_hold(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
+            "dtmf" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_dtmf(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
             "get_status" => engine.handle_get_status().await,
             other => Err(format!("Unknown method: {other}")),
         }
@@ -260,8 +251,7 @@ async fn process_request(state: &AppState, text: &str) -> Value {
             } else {
                 INTERNAL_ERROR
             };
-            serde_json::to_value(JsonRpcErrorResponse::new(id, code, msg))
-                .unwrap_or(Value::Null)
+            serde_json::to_value(JsonRpcErrorResponse::new(id, code, msg)).unwrap_or(Value::Null)
         }
     }
 }

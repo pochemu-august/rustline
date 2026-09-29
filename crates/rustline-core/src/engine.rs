@@ -8,10 +8,7 @@
 
 use std::collections::HashMap;
 
-use rustline_proto::{
-    commands::*,
-    events::*,
-};
+use rustline_proto::{commands::*, events::*};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -48,7 +45,10 @@ impl Engine {
     }
 
     /// Handle a `register` command.
-    pub async fn handle_register(&mut self, params: RegisterParams) -> Result<serde_json::Value, String> {
+    pub async fn handle_register(
+        &mut self,
+        params: RegisterParams,
+    ) -> Result<serde_json::Value, String> {
         info!(
             server = %params.server,
             username = %params.username,
@@ -72,13 +72,15 @@ impl Engine {
         self.account.start_registering(config);
 
         // Emit "registering" event
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::RegistrationStateChanged(RegistrationStateChanged {
-                state: RegistrationState::Registering,
-                code: None,
-                reason: None,
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::RegistrationStateChanged(
+                RegistrationStateChanged {
+                    state: RegistrationState::Registering,
+                    code: None,
+                    reason: None,
+                },
+            )));
 
         // TODO: In the future, send a real SIP REGISTER via rsip transport.
         //       For now, simulate immediate success after a short delay.
@@ -86,13 +88,15 @@ impl Engine {
         // Transition: Registering → Registered (mock)
         self.account.mark_registered();
 
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::RegistrationStateChanged(RegistrationStateChanged {
-                state: RegistrationState::Registered,
-                code: Some(200),
-                reason: Some("OK".to_string()),
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::RegistrationStateChanged(
+                RegistrationStateChanged {
+                    state: RegistrationState::Registered,
+                    code: Some(200),
+                    reason: Some("OK".to_string()),
+                },
+            )));
 
         Ok(serde_json::json!({
             "status": "registered",
@@ -106,13 +110,15 @@ impl Engine {
 
         self.account.mark_unregistered();
 
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::RegistrationStateChanged(RegistrationStateChanged {
-                state: RegistrationState::Unregistered,
-                code: None,
-                reason: None,
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::RegistrationStateChanged(
+                RegistrationStateChanged {
+                    state: RegistrationState::Unregistered,
+                    code: None,
+                    reason: None,
+                },
+            )));
 
         Ok(serde_json::json!({
             "status": "unregistered"
@@ -130,18 +136,20 @@ impl Engine {
         info!(call_id = %call_id, target = %params.target, "Initiating outgoing call");
 
         // Emit call_state_changed → Calling
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::CallStateChanged(CallStateChanged {
-                call_id: call_id.clone(),
-                state: CallState::Calling,
-                direction: CallDirection::Outbound,
-                remote_name: None,
-                remote_uri: Some(params.target),
-                duration_secs: None,
-                code: None,
-                reason: None,
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::CallStateChanged(
+                CallStateChanged {
+                    call_id: call_id.clone(),
+                    state: CallState::Calling,
+                    direction: CallDirection::Outbound,
+                    remote_name: None,
+                    remote_uri: Some(params.target),
+                    duration_secs: None,
+                    code: None,
+                    reason: None,
+                },
+            )));
 
         self.calls.insert(call_id.clone(), call);
 
@@ -152,8 +160,13 @@ impl Engine {
     }
 
     /// Handle an `answer` command.
-    pub async fn handle_answer(&mut self, params: AnswerParams) -> Result<serde_json::Value, String> {
-        let call = self.calls.get_mut(&params.call_id)
+    pub async fn handle_answer(
+        &mut self,
+        params: AnswerParams,
+    ) -> Result<serde_json::Value, String> {
+        let call = self
+            .calls
+            .get_mut(&params.call_id)
             .ok_or_else(|| format!("Call {} not found", params.call_id))?;
 
         if call.state != CallState::Incoming {
@@ -163,18 +176,20 @@ impl Engine {
         call.transition(CallState::Connecting);
         call.transition(CallState::Confirmed);
 
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::CallStateChanged(CallStateChanged {
-                call_id: params.call_id.clone(),
-                state: CallState::Confirmed,
-                direction: call.direction,
-                remote_name: call.remote_name.clone(),
-                remote_uri: Some(call.remote_uri.clone()),
-                duration_secs: None,
-                code: Some(200),
-                reason: Some("OK".to_string()),
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::CallStateChanged(
+                CallStateChanged {
+                    call_id: params.call_id.clone(),
+                    state: CallState::Confirmed,
+                    direction: call.direction,
+                    remote_name: call.remote_name.clone(),
+                    remote_uri: Some(call.remote_uri.clone()),
+                    duration_secs: None,
+                    code: Some(200),
+                    reason: Some("OK".to_string()),
+                },
+            )));
 
         Ok(serde_json::json!({
             "call_id": params.call_id,
@@ -183,24 +198,31 @@ impl Engine {
     }
 
     /// Handle a `hangup` command.
-    pub async fn handle_hangup(&mut self, params: HangupParams) -> Result<serde_json::Value, String> {
-        let call = self.calls.get_mut(&params.call_id)
+    pub async fn handle_hangup(
+        &mut self,
+        params: HangupParams,
+    ) -> Result<serde_json::Value, String> {
+        let call = self
+            .calls
+            .get_mut(&params.call_id)
             .ok_or_else(|| format!("Call {} not found", params.call_id))?;
 
         call.transition(CallState::Disconnected);
 
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::CallStateChanged(CallStateChanged {
-                call_id: params.call_id.clone(),
-                state: CallState::Disconnected,
-                direction: call.direction,
-                remote_name: call.remote_name.clone(),
-                remote_uri: Some(call.remote_uri.clone()),
-                duration_secs: Some(call.duration_secs),
-                code: Some(200),
-                reason: Some("Normal call clearing".to_string()),
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::CallStateChanged(
+                CallStateChanged {
+                    call_id: params.call_id.clone(),
+                    state: CallState::Disconnected,
+                    direction: call.direction,
+                    remote_name: call.remote_name.clone(),
+                    remote_uri: Some(call.remote_uri.clone()),
+                    duration_secs: Some(call.duration_secs),
+                    code: Some(200),
+                    reason: Some("Normal call clearing".to_string()),
+                },
+            )));
 
         // Remove terminated calls
         self.calls.retain(|_, c| !c.is_terminated());
@@ -223,7 +245,9 @@ impl Engine {
 
     /// Handle a `hold` command (stub).
     pub async fn handle_hold(&mut self, params: HoldParams) -> Result<serde_json::Value, String> {
-        let call = self.calls.get_mut(&params.call_id)
+        let call = self
+            .calls
+            .get_mut(&params.call_id)
             .ok_or_else(|| format!("Call {} not found", params.call_id))?;
 
         let new_state = if call.state == CallState::Held {
@@ -236,18 +260,20 @@ impl Engine {
             return Err(format!("Cannot hold/unhold call in state {:?}", call.state));
         }
 
-        let _ = self.event_tx.send(EngineEvent::Broadcast(
-            Event::CallStateChanged(CallStateChanged {
-                call_id: params.call_id.clone(),
-                state: call.state,
-                direction: call.direction,
-                remote_name: call.remote_name.clone(),
-                remote_uri: Some(call.remote_uri.clone()),
-                duration_secs: None,
-                code: None,
-                reason: None,
-            }),
-        ));
+        let _ = self
+            .event_tx
+            .send(EngineEvent::Broadcast(Event::CallStateChanged(
+                CallStateChanged {
+                    call_id: params.call_id.clone(),
+                    state: call.state,
+                    direction: call.direction,
+                    remote_name: call.remote_name.clone(),
+                    remote_uri: Some(call.remote_uri.clone()),
+                    duration_secs: None,
+                    code: None,
+                    reason: None,
+                },
+            )));
 
         Ok(serde_json::json!({
             "call_id": params.call_id,
@@ -257,7 +283,9 @@ impl Engine {
 
     /// Handle a `dtmf` command (stub).
     pub async fn handle_dtmf(&mut self, params: DtmfParams) -> Result<serde_json::Value, String> {
-        let call = self.calls.get(&params.call_id)
+        let call = self
+            .calls
+            .get(&params.call_id)
             .ok_or_else(|| format!("Call {} not found", params.call_id))?;
 
         if !call.is_active() {
