@@ -72,14 +72,24 @@ impl SipTransport {
         self.remote_addr
     }
 
+    /// Get reference to the shared UDP socket.
+    pub fn socket(&self) -> &Arc<UdpSocket> {
+        &self.socket
+    }
+
     /// Send raw SIP bytes to the remote SIP server.
     pub async fn send_raw(&self, data: &[u8]) -> Result<()> {
+        self.send_to(data, self.remote_addr).await
+    }
+
+    /// Send raw SIP bytes to a specific destination socket address.
+    pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> Result<()> {
         trace!(
             "SIP UDP send to {}:\n{}",
-            self.remote_addr,
+            addr,
             String::from_utf8_lossy(data)
         );
-        self.socket.send_to(data, self.remote_addr).await?;
+        self.socket.send_to(data, addr).await?;
         Ok(())
     }
 

@@ -99,8 +99,8 @@ impl Engine {
 
         // Create SIP client and attempt real network registration
         let client =
-            match SipClient::new(config.clone()).await {
-                Ok(c) => Arc::new(c),
+            match SipClient::new(config.clone(), self.event_tx.clone()).await {
+                Ok(c) => c,
                 Err(e) => {
                     let err_msg = format!("Failed to create SIP transport: {}", e);
                     self.account.mark_failed(err_msg.clone());
@@ -203,26 +203,20 @@ impl Engine {
             return Err("Not registered. Call `register` first.".to_string());
         }
 
-        let call = Call::new_outgoing(&params.target);
-        let call_id = call.id.clone();
-        info!(call_id = %call_id, target = %params.target, "Initiating outgoing call");
+        let client = self
+            .sip_client
+            .as_ref()
+            .ok_or_else(|| "SIP client not active".to_string())?;
 
-        // Emit call_state_changed → Calling
-        let _ = self
-            .event_tx
-            .send(EngineEvent::Broadcast(Event::CallStateChanged(
-                CallStateChanged {
-                    call_id: call_id.clone(),
-                    state: CallState::Calling,
-                    direction: CallDirection::Outbound,
-                    remote_name: None,
-                    remote_uri: Some(params.target),
-                    duration_secs: None,
-                    code: None,
-                    reason: None,
-                },
-            )));
+        info!(target = %params.target, "Initiating outgoing SIP call to Asterisk");
 
+        let call_id = client
+            .dial(&params.target)
+            .await
+            .map_err(|e| format!("SIP dial failed: {}", e))?;
+
+        let mut call = Call::new_outgoing(&params.target);
+        call.id = call_id.clone();
         self.calls.insert(call_id.clone(), call);
 
         Ok(serde_json::json!({
@@ -236,32 +230,18 @@ impl Engine {
         &mut self,
         params: AnswerParams,
     ) -> Result<serde_json::Value, String> {
-        let call = self
-            .calls
-            .get_mut(&params.call_id)
-            .ok_or_else(|| format!("Call {} not found", params.call_id))?;
+        info!(call_id = %params.call_id, "Answering call");
 
-        if call.state != CallState::Incoming {
-            return Err(format!("Call {} is not in Incoming state", params.call_id));
+        if let Some(ref client) = self.sip_client {
+            client
+                .answer(&params.call_id)
+                .await
+                .map_err(|e| format!("Failed to answer SIP call: {}", e))?;
         }
 
-        call.transition(CallState::Connecting);
-        call.transition(CallState::Confirmed);
-
-        let _ = self
-            .event_tx
-            .send(EngineEvent::Broadcast(Event::CallStateChanged(
-                CallStateChanged {
-                    call_id: params.call_id.clone(),
-                    state: CallState::Confirmed,
-                    direction: call.direction,
-                    remote_name: call.remote_name.clone(),
-                    remote_uri: Some(call.remote_uri.clone()),
-                    duration_secs: None,
-                    code: Some(200),
-                    reason: Some("OK".to_string()),
-                },
-            )));
+        if let Some(call) = self.calls.get_mut(&params.call_id) {
+            call.transition(CallState::Confirmed);
+        }
 
         Ok(serde_json::json!({
             "call_id": params.call_id,
@@ -274,29 +254,15 @@ impl Engine {
         &mut self,
         params: HangupParams,
     ) -> Result<serde_json::Value, String> {
-        let call = self
-            .calls
-            .get_mut(&params.call_id)
-            .ok_or_else(|| format!("Call {} not found", params.call_id))?;
+        info!(call_id = %params.call_id, "Hanging up call");
 
-        call.transition(CallState::Disconnected);
+        if let Some(ref client) = self.sip_client {
+            let _ = client.hangup(&params.call_id).await;
+        }
 
-        let _ = self
-            .event_tx
-            .send(EngineEvent::Broadcast(Event::CallStateChanged(
-                CallStateChanged {
-                    call_id: params.call_id.clone(),
-                    state: CallState::Disconnected,
-                    direction: call.direction,
-                    remote_name: call.remote_name.clone(),
-                    remote_uri: Some(call.remote_uri.clone()),
-                    duration_secs: Some(call.duration_secs),
-                    code: Some(200),
-                    reason: Some("Normal call clearing".to_string()),
-                },
-            )));
-
-        // Remove terminated calls
+        if let Some(call) = self.calls.get_mut(&params.call_id) {
+            call.transition(CallState::Disconnected);
+        }
         self.calls.retain(|_, c| !c.is_terminated());
 
         Ok(serde_json::json!({
