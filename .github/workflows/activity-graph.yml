@@ -14,19 +14,21 @@ permissions:
 
 jobs:
   build:
-    name: Generate Activity Graph
+    name: Generate Repository Activity Graph
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repository with full history
         uses: actions/checkout@v4
-
-      - name: Generate activity graph SVG
-        uses: maurodesouza/github-readme-activity-graph-action@v1
         with:
-          username: ${{ github.repository_owner }}
-          options: theme=tokyo-night&area=true&hide_border=true&radius=12
-          output_path: dist/activity-graph.svg
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Generate repository commit activity SVG
+        run: python .github/scripts/generate_repo_graph.py dist/activity-graph.svg
 
       - name: Push activity-graph.svg to output branch
         uses: crazy-max/ghaction-github-pages@v4
