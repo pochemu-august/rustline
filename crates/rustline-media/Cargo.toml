@@ -1,0 +1,13 @@
+[package]
+name = "rustline-media"
+description = "Audio I/O and RTP media pipeline stubs for rustline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+thiserror = { workspace = true }
+# Future dependencies:
+# cpal = "0.15"           # Audio I/O
+# webrtc = "0.11"         # RTP / SRTP / ICE

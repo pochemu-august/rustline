@@ -1,0 +1,16 @@
+[package]
+name = "rustline-core"
+description = "SIP engine, account and call state machines for rustline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustline-proto = { path = "../rustline-proto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+# rsip = { workspace = true }   # TODO: enable when SIP transport layer is implemented
