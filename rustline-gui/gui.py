@@ -201,6 +201,8 @@ class MicroSipCloneApp:
 
     def _on_response(self, req_id, result):
         self.root.after(0, lambda: self._log(f"Ответ [{req_id}]: {result}"))
+        if isinstance(result, str) and ("@" in result or "-" in result):
+            self.current_call_id = result
 
     def _handle_event(self, event_name, data):
         self._log(f"Событие: {event_name}")
@@ -214,12 +216,24 @@ class MicroSipCloneApp:
                 self.current_call_id = data["call_id"]
                 asyncio.run_coroutine_threadsafe(self.client.answer(data["call_id"]), self.loop)
                 self.btn_hangup.config(state="normal")
+                self.status_var.set(f"Разговор с {name}")
                 
         elif event_name == "call_state_changed":
-            if data["state"] == "disconnected":
+            state = data.get("state")
+            call_id = data.get("call_id")
+            if state in ("early", "confirmed", "incoming"):
+                self.current_call_id = call_id
+                self.btn_hangup.config(state="normal")
+            
+            if state == "confirmed":
+                self.status_var.set("Разговор (подключено)")
+            elif state == "early":
+                self.status_var.set("Гудки (вызов)...")
+            elif state == "disconnected":
                 self.btn_hangup.config(state="disabled")
                 self.current_call_id = None
-                self.status_var.set("Вызов завершен")
+                reason = data.get("reason")
+                self.status_var.set(f"Вызов завершен ({reason})" if reason else "Вызов завершен")
 
     def _on_register(self):
         asyncio.run_coroutine_threadsafe(

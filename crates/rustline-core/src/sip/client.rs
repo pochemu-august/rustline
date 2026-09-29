@@ -167,11 +167,55 @@ impl SipClient {
                 let _ = self.transport.send_to(reply.as_bytes(), src_addr).await;
             }
 
-            // Incoming Call (e.g. from 101 to 100)
+            // Incoming Call (e.g. from 101 to 100) or in-dialog re-INVITE
             rsip::Method::Invite => {
+                let is_reinvite = {
+                    let dialogs = self.dialogs.lock().await;
+                    dialogs.contains_key(&call_id)
+                };
+
+                if is_reinvite {
+                    debug!(%call_id, %cseq_str, "Received in-dialog re-INVITE from Asterisk");
+                    let cseq_num = parse_cseq_num(&cseq_str);
+                    {
+                        let mut dialogs = self.dialogs.lock().await;
+                        if let Some(d) = dialogs.get_mut(&call_id) {
+                            d.remote_cseq = cseq_num;
+                            d.incoming_via = Some(via_str.clone());
+                            d.incoming_from = Some(from_str.clone());
+                            d.incoming_to = Some(to_str.clone());
+                        }
+                    }
+
+                    // Directly respond with 200 OK + SDP (in-dialog To header already has our local tag)
+                    let local_ip = self.transport.local_ip().to_string();
+                    let local_port = self.transport.local_port();
+                    let sdp = build_sdp(&local_ip, 10030);
+                    let sdp_len = sdp.len();
+
+                    let reply = format!(
+                        "SIP/2.0 200 OK\r\n\
+                        Via: {via_str}\r\n\
+                        From: {from_str}\r\n\
+                        To: {to_str}\r\n\
+                        Call-ID: {call_id}\r\n\
+                        CSeq: {cseq_str}\r\n\
+                        Contact: <sip:{username}@{local_ip}:{local_port};transport=udp>\r\n\
+                        User-Agent: rustline/0.1.0\r\n\
+                        Content-Type: application/sdp\r\n\
+                        Content-Length: {sdp_len}\r\n\r\n\
+                        {sdp}",
+                        username = self.config.username,
+                    );
+                    let _ = self.transport.send_to(reply.as_bytes(), src_addr).await;
+                    return;
+                }
+
                 let caller_uri = extract_uri_from_from(&from_str);
                 let caller_name = extract_display_name_from_from(&from_str);
                 let remote_tag = extract_tag_from_header(&from_str);
+                let contact_str = extract_header_val(headers, "Contact");
+                let remote_contact = contact_str.as_deref().map(extract_contact_uri);
                 let cseq_num = parse_cseq_num(&cseq_str);
 
                 info!(
@@ -183,7 +227,7 @@ impl SipClient {
                 let local_ip = self.transport.local_ip().to_string();
                 let local_port = self.transport.local_port();
 
-                let dialog = SipDialog::new_inbound(
+                let mut dialog = SipDialog::new_inbound(
                     call_id.clone(),
                     caller_uri.clone(),
                     caller_name.clone(),
@@ -193,6 +237,7 @@ impl SipClient {
                     from_str.clone(),
                     to_str.clone(),
                 );
+                dialog.remote_contact = remote_contact;
                 let local_tag = dialog.local_tag.clone();
 
                 {
@@ -561,7 +606,7 @@ impl SipClient {
         } else {
             self.config.port
         };
-        let request_uri = format!("sip:{}:{}", target, server_port);
+        let request_uri = format!("sip:{}@{}:{}", target, domain, server_port);
         let sdp = build_sdp(local_ip, 10030);
 
         // Step 1: Send initial INVITE
@@ -673,20 +718,27 @@ impl SipClient {
                 info!(%target, %call_id, "🎉 Call answered by remote (200 OK)!");
                 let to_hdr = extract_header_val(res.headers(), "To").unwrap_or_default();
                 let remote_tag = extract_tag_from_header(&to_hdr);
+                let contact_hdr = extract_header_val(res.headers(), "Contact");
+                let remote_contact = contact_hdr.as_deref().map(extract_contact_uri);
 
                 {
                     let mut dialogs = self.dialogs.lock().await;
                     if let Some(d) = dialogs.get_mut(call_id) {
                         d.remote_tag = remote_tag;
                         d.incoming_to = Some(to_hdr.clone());
+                        if remote_contact.is_some() {
+                            d.remote_contact = remote_contact.clone();
+                        }
                     }
                 }
 
-                // Send ACK for 200 OK
+                // Send ACK for 200 OK (to remote Contact URI if provided)
+                let ack_target = remote_contact.as_deref().unwrap_or(&request_uri);
                 let ack_branch = format!("z9hG4bK-{}", rand_u32());
                 let ack = format!(
-                    "ACK {request_uri} SIP/2.0\r\n\
+                    "ACK {ack_target} SIP/2.0\r\n\
                     Via: SIP/2.0/UDP {local_ip}:{local_port};branch={ack_branch};rport\r\n\
+                    Max-Forwards: 70\r\n\
                     From: <sip:{username}@{domain}>;tag={local_tag}\r\n\
                     To: {to_hdr}\r\n\
                     Call-ID: {call_id}\r\n\
@@ -784,6 +836,13 @@ impl SipClient {
 
         self.transport.send_raw(reply.as_bytes()).await?;
 
+        {
+            let mut dialogs = self.dialogs.lock().await;
+            if let Some(d) = dialogs.get_mut(call_id) {
+                d.incoming_to = Some(to_with_tag);
+            }
+        }
+
         let _ = self
             .engine_tx
             .send(EngineEvent::Broadcast(Event::CallStateChanged(
@@ -827,41 +886,75 @@ impl SipClient {
             let via = dialog.incoming_via.unwrap_or_default();
             let from = dialog.incoming_from.unwrap_or_default();
             let to = dialog.incoming_to.unwrap_or_default();
+            let to_with_tag = if to.contains("tag=") {
+                to
+            } else {
+                format!("{};tag={}", to, dialog.local_tag)
+            };
             let busy = format!(
                 "SIP/2.0 486 Busy Here\r\n\
                 Via: {via}\r\n\
                 From: {from}\r\n\
-                To: {to};tag={local_tag}\r\n\
+                To: {to_with_tag}\r\n\
                 Call-ID: {call_id}\r\n\
                 CSeq: {remote_cseq} INVITE\r\n\
                 Content-Length: 0\r\n\r\n",
-                local_tag = dialog.local_tag,
                 remote_cseq = dialog.remote_cseq,
             );
             self.transport.send_raw(busy.as_bytes()).await?;
         } else {
             // Established call -> Send BYE
             let branch = format!("z9hG4bK-{}", rand_u32());
-            let target = &dialog.remote_uri;
-            let remote_tag = dialog.remote_tag.unwrap_or_default();
-            let to_hdr = if remote_tag.is_empty() {
-                format!("<sip:{target}@{domain}>")
+            let server_port = if self.config.port == 0 {
+                5060
             } else {
-                format!("<sip:{target}@{domain}>;tag={remote_tag}")
+                self.config.port
+            };
+
+            // Request-URI of BYE: RFC 3261 12.2.1.1 specifies the remote target (Contact URI)
+            let req_uri = dialog
+                .remote_contact
+                .unwrap_or_else(|| format!("sip:{}@{}:{}", dialog.remote_uri, domain, server_port));
+
+            let (from_hdr, to_hdr) = if dialog.is_inbound {
+                // Inbound call:
+                // From is our local URI (the incoming To header with our local tag)
+                // To is the remote caller URI (the incoming From header with remote tag)
+                let local_to = dialog.incoming_to.unwrap_or_else(|| {
+                    format!(
+                        "<sip:{}@{}>;tag={}",
+                        self.config.username, domain, dialog.local_tag
+                    )
+                });
+                let remote_from = dialog
+                    .incoming_from
+                    .unwrap_or_else(|| format!("<sip:{}@{}>", dialog.remote_uri, domain));
+                (local_to, remote_from)
+            } else {
+                // Outbound call:
+                let remote_tag = dialog.remote_tag.unwrap_or_default();
+                let to = if remote_tag.is_empty() {
+                    format!("<sip:{}@{}>", dialog.remote_uri, domain)
+                } else {
+                    format!("<sip:{}@{}>;tag={}", dialog.remote_uri, domain, remote_tag)
+                };
+                let from = format!(
+                    "<sip:{}@{}>;tag={}",
+                    self.config.username, domain, dialog.local_tag
+                );
+                (from, to)
             };
 
             let bye = format!(
-                "BYE sip:{target}@{domain} SIP/2.0\r\n\
+                "BYE {req_uri} SIP/2.0\r\n\
                 Via: SIP/2.0/UDP {local_ip}:{local_port};branch={branch};rport\r\n\
                 Max-Forwards: 70\r\n\
-                From: <sip:{username}@{domain}>;tag={local_tag}\r\n\
+                From: {from_hdr}\r\n\
                 To: {to_hdr}\r\n\
                 Call-ID: {call_id}\r\n\
                 CSeq: 105 BYE\r\n\
                 User-Agent: rustline/0.1.0\r\n\
-                Content-Length: 0\r\n\r\n",
-                username = self.config.username,
-                local_tag = dialog.local_tag,
+                Content-Length: 0\r\n\r\n"
             );
             self.transport.send_raw(bye.as_bytes()).await?;
         }
@@ -1041,4 +1134,15 @@ fn parse_cseq_num(cseq: &str) -> u32 {
         .next()
         .and_then(|n| n.parse::<u32>().ok())
         .unwrap_or(1)
+}
+
+/// Extract clean SIP URI from Contact header (e.g. `<sip:asterisk@192.168.0.104:5060>` -> `sip:asterisk@192.168.0.104:5060`).
+fn extract_contact_uri(contact: &str) -> String {
+    if let Some(start) = contact.find('<')
+        && let Some(end) = contact[start + 1..].find('>')
+    {
+        return contact[start + 1..start + 1 + end].trim().to_string();
+    }
+    let end = contact.find(';').unwrap_or(contact.len());
+    contact[..end].trim().to_string()
 }

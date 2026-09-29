@@ -15,6 +15,8 @@ pub struct SipDialog {
     pub remote_uri: String,
     /// Display name of the caller (if available).
     pub remote_name: Option<String>,
+    /// Remote Contact URI (from Contact header, e.g. sip:asterisk@192.168.0.104:5060).
+    pub remote_contact: Option<String>,
     /// Our current local CSeq counter.
     pub local_cseq: u32,
     /// Remote party's last seen CSeq.
@@ -40,6 +42,7 @@ impl SipDialog {
             remote_tag: None,
             remote_uri: target.to_string(),
             remote_name: None,
+            remote_contact: None,
             local_cseq: 100,
             remote_cseq: 0,
             incoming_via: None,
@@ -68,6 +71,7 @@ impl SipDialog {
             remote_tag,
             remote_uri,
             remote_name,
+            remote_contact: None,
             local_cseq: 1,
             remote_cseq,
             incoming_via: Some(via),
