@@ -43,6 +43,8 @@ pub struct Engine {
     active_calls: HashMap<String, ActiveCall>,
     /// Pending incoming calls waiting to be answered: call_id -> IncomingInvite.
     pending_incoming: HashMap<String, IncomingInvite>,
+    sip_packet_tx: mpsc::Sender<(Vec<u8>, SocketAddr, Option<Arc<SipTransport>>)>,
+    sip_packet_rx: mpsc::Receiver<(Vec<u8>, SocketAddr, Option<Arc<SipTransport>>)>,
 }
 
 /// A cloneable handle for sending commands to the engine and subscribing
@@ -74,6 +76,7 @@ impl Engine {
     pub fn new() -> (Self, EngineHandle) {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (event_tx, _) = broadcast::channel(256);
+        let (sip_packet_tx, sip_packet_rx) = mpsc::channel(128);
 
         let handle = EngineHandle {
             cmd_tx,
@@ -83,6 +86,8 @@ impl Engine {
         let engine = Engine {
             cmd_rx,
             event_tx,
+            sip_packet_tx,
+            sip_packet_rx,
             registration: RegistrationState::Unregistered,
             reg_config: None,
             reg_transport: None,
@@ -119,6 +124,14 @@ impl Engine {
                     }
                 }
 
+                // Packets received on call_transports (e.g. BYE or re-INVITE from remote party)
+                maybe_call_packet = self.sip_packet_rx.recv() => {
+                    if let Some((bytes, peer_addr, transport)) = maybe_call_packet {
+                        let trans = transport.as_ref().map(Arc::clone);
+                        self.handle_incoming_sip_packet(&bytes, peer_addr, trans.as_deref()).await;
+                    }
+                }
+
                 recv_res = async {
                     match reg_transport_opt {
                         Some((ref t, _)) => {
@@ -131,7 +144,8 @@ impl Engine {
                 } => {
                     match recv_res {
                         Ok((n, peer_addr)) => {
-                            self.handle_incoming_sip_packet(&sip_buf[..n], peer_addr).await;
+                            let trans = self.reg_transport.as_ref().map(|(t, _)| Arc::clone(t));
+                            self.handle_incoming_sip_packet(&sip_buf[..n], peer_addr, trans.as_deref()).await;
                         }
                         Err(e) => {
                             warn!("SIP recv error on registration transport: {e}");
@@ -182,7 +196,7 @@ impl Engine {
                 call_id,
                 response_tx,
             } => {
-                let result = self.handle_answer(&call_id).await;
+                let result = self.handle_answer(call_id.as_deref()).await;
                 let _ = response_tx.send(result);
                 false
             }
@@ -191,7 +205,7 @@ impl Engine {
                 call_id,
                 response_tx,
             } => {
-                let result = self.handle_hangup(&call_id).await;
+                let result = self.handle_hangup(call_id.as_deref()).await;
                 let _ = response_tx.send(result);
                 false
             }
@@ -220,13 +234,13 @@ impl Engine {
                 // Decline any pending incoming calls
                 let pending_ids: Vec<String> = self.pending_incoming.keys().cloned().collect();
                 for cid in pending_ids {
-                    let _ = self.handle_hangup(&cid).await;
+                    let _ = self.handle_hangup(Some(&cid)).await;
                 }
 
                 // Hangup all active calls
                 let call_ids: Vec<String> = self.active_calls.keys().cloned().collect();
                 for cid in call_ids {
-                    let _ = self.handle_hangup(&cid).await;
+                    let _ = self.handle_hangup(Some(&cid)).await;
                 }
 
                 // Best-effort unregister before exiting
@@ -312,9 +326,11 @@ impl Engine {
 
         info!(destination = %destination, "initiating call from engine");
 
-        let call_transport = transport::create_transport(TransportType::Udp)
-            .await
-            .map_err(|e| format!("failed to create call transport: {e}"))?;
+        let call_transport = Arc::new(
+            transport::create_transport(TransportType::Udp)
+                .await
+                .map_err(|e| format!("failed to create call transport: {e}"))?,
+        );
 
         match call::start_outgoing_call(
             &destination,
@@ -325,9 +341,30 @@ impl Engine {
         )
         .await {
             Ok(mut active_call) => {
-                active_call.call_transport = Some(call_transport);
                 let call_id = active_call.call_id.clone();
                 let state = active_call.state.clone();
+
+                // Spawn ongoing receiver task on call_transport so BYE and re-INVITE are received!
+                let ct = Arc::clone(&call_transport);
+                let tx = self.sip_packet_tx.clone();
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop_clone = Arc::clone(&stop);
+
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        match ct.recv_from(&mut buf).await {
+                            Ok((n, peer)) => {
+                                let _ = tx.send((buf[..n].to_vec(), peer, Some(Arc::clone(&ct)))).await;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    debug!("call transport receiver task terminated");
+                });
+
+                active_call.call_transport = Some(call_transport);
+                active_call.call_stop = Some(stop);
                 self.active_calls.insert(call_id.clone(), active_call);
 
                 let _ = self.event_tx.send(CoreEvent::CallStateChanged {
@@ -348,18 +385,31 @@ impl Engine {
         }
     }
 
-    async fn handle_answer(&mut self, call_id: &str) -> Result<(), String> {
+    async fn handle_answer(&mut self, call_id: Option<&str>) -> Result<(), String> {
+        let cid = match call_id {
+            Some(id) if !id.trim().is_empty() => id.to_string(),
+            _ => {
+                if self.pending_incoming.len() == 1 {
+                    self.pending_incoming.keys().next().unwrap().clone()
+                } else if self.pending_incoming.is_empty() {
+                    return Err("no incoming calls to answer".to_string());
+                } else {
+                    return Err("multiple incoming calls; call_id must be specified".to_string());
+                }
+            }
+        };
+
         let invite = self
             .pending_incoming
-            .remove(call_id)
-            .ok_or_else(|| format!("incoming call '{call_id}' not found or already answered"))?;
+            .remove(&cid)
+            .ok_or_else(|| format!("incoming call '{cid}' not found or already answered"))?;
 
         let (config, transport) = match (&self.reg_config, &self.reg_transport) {
             (Some(c), Some((t, _addr))) => (c.clone(), t.clone()),
             _ => return Err("cannot answer call: not registered on a SIP server".to_string()),
         };
 
-        info!(call_id = %call_id, "answering incoming call from engine");
+        info!(call_id = %cid, "answering incoming call from engine");
 
         match call::answer_incoming_call(&invite, &config, &transport).await {
             Ok(active_call) => {
@@ -378,7 +428,7 @@ impl Engine {
             Err(e) => {
                 let err_msg = format!("{e}");
                 let _ = self.event_tx.send(CoreEvent::Error {
-                    call_id: Some(call_id.to_string()),
+                    call_id: Some(cid.clone()),
                     message: err_msg.clone(),
                 });
                 Err(err_msg)
@@ -386,9 +436,24 @@ impl Engine {
         }
     }
 
-    async fn handle_hangup(&mut self, call_id: &str) -> Result<(), String> {
+    async fn handle_hangup(&mut self, call_id: Option<&str>) -> Result<(), String> {
+        let cid = match call_id {
+            Some(id) if !id.trim().is_empty() => id.to_string(),
+            _ => {
+                if self.pending_incoming.len() == 1 {
+                    self.pending_incoming.keys().next().unwrap().clone()
+                } else if self.active_calls.len() == 1 {
+                    self.active_calls.keys().next().unwrap().clone()
+                } else if self.pending_incoming.is_empty() && self.active_calls.is_empty() {
+                    return Err("no active or pending calls to hang up".to_string());
+                } else {
+                    return Err("multiple calls in progress; call_id must be specified".to_string());
+                }
+            }
+        };
+
         // If it's a pending incoming call, reject with 486 Busy Here
-        if let Some(invite) = self.pending_incoming.remove(call_id) {
+        if let Some(invite) = self.pending_incoming.remove(&cid) {
             if let Some((ref transport, _)) = self.reg_transport {
                 let mut busy = SipMessage::new_response(486, "Busy Here");
                 for via in &invite.via_headers {
@@ -402,37 +467,42 @@ impl Engine {
                 let _ = transport.send_to(&busy.to_bytes(), invite.remote_addr).await;
             }
             let _ = self.event_tx.send(CoreEvent::CallStateChanged {
-                call_id: call_id.to_string(),
+                call_id: cid.clone(),
                 state: CallState::Ended,
             });
-            info!(call_id = %call_id, "incoming call rejected (486 Busy Here)");
+            info!(call_id = %cid, "incoming call rejected (486 Busy Here)");
             return Ok(());
         }
 
         let mut active_call = self
             .active_calls
-            .remove(call_id)
-            .ok_or_else(|| format!("call '{call_id}' not found"))?;
+            .remove(&cid)
+            .ok_or_else(|| format!("call '{cid}' not found"))?;
 
         if let Some(config) = &self.reg_config {
             let reg_t = self.reg_transport.as_ref().map(|(t, _)| t.as_ref());
             if let Err(e) = active_call.hangup(config, reg_t).await {
-                warn!(call_id = %call_id, "error hanging up call: {e}");
+                warn!(call_id = %cid, "error hanging up call: {e}");
             }
         }
 
         let _ = self.event_tx.send(CoreEvent::CallStateChanged {
-            call_id: call_id.to_string(),
+            call_id: cid.clone(),
             state: CallState::Ended,
         });
 
-        info!(call_id = %call_id, "call hung up successfully");
+        info!(call_id = %cid, "call hung up successfully");
         Ok(())
     }
 
     // ── Incoming SIP packet handling ────────────────────────────────────
 
-    async fn handle_incoming_sip_packet(&mut self, data: &[u8], peer_addr: SocketAddr) {
+    async fn handle_incoming_sip_packet(
+        &mut self,
+        data: &[u8],
+        peer_addr: SocketAddr,
+        incoming_transport: Option<&SipTransport>,
+    ) {
         let msg = match SipMessage::parse(data) {
             Ok(m) => m,
             Err(e) => {
@@ -453,7 +523,11 @@ impl Engine {
                 // In-dialog re-INVITE for active call (e.g. direct media or session refresh)
                 if let Some(active_call) = self.active_calls.get_mut(&call_id) {
                     info!(call_id = %call_id, "handling in-dialog re-INVITE");
-                    if let Some((ref transport, _)) = self.reg_transport {
+                    let transport = incoming_transport
+                        .or_else(|| active_call.call_transport.as_ref().map(|t| t.as_ref()))
+                        .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+
+                    if let Some(transport) = transport {
                         let local_addr = transport.local_addr().unwrap_or(peer_addr);
                         let transport_param = transport.transport_param();
 
@@ -513,7 +587,9 @@ impl Engine {
                 // Retransmission for ringing call?
                 if let Some(invite) = self.pending_incoming.get(&call_id) {
                     debug!(call_id = %call_id, "re-sending 180 Ringing for incoming call");
-                    if let Some((ref transport, _)) = self.reg_transport {
+                    let transport = incoming_transport
+                        .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+                    if let Some(transport) = transport {
                         let local_addr = transport.local_addr().unwrap_or(peer_addr);
                         let ringing = call::build_ringing_response(invite, local_addr, transport.transport_param());
                         let _ = transport.send_to(&ringing.to_bytes(), peer_addr).await;
@@ -526,7 +602,9 @@ impl Engine {
                     info!(call_id = %invite.call_id, from = %invite.from_user, "incoming INVITE received");
 
                     // Send 180 Ringing immediately
-                    if let Some((ref transport, _)) = self.reg_transport {
+                    let transport = incoming_transport
+                        .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+                    if let Some(transport) = transport {
                         let local_addr = transport.local_addr().unwrap_or(peer_addr);
                         let ringing = call::build_ringing_response(&invite, local_addr, transport.transport_param());
                         let _ = transport.send_to(&ringing.to_bytes(), peer_addr).await;
@@ -552,7 +630,9 @@ impl Engine {
                 if let Some(invite) = self.pending_incoming.remove(&call_id) {
                     info!(call_id = %call_id, "received CANCEL for incoming call");
 
-                    if let Some((ref transport, _)) = self.reg_transport {
+                    let transport = incoming_transport
+                        .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+                    if let Some(transport) = transport {
                         let mut cancel_ok = SipMessage::new_response(200, "OK");
                         for via in msg.headers_all("Via") {
                             cancel_ok.add_header("Via", via.to_string());
@@ -600,9 +680,16 @@ impl Engine {
                     if let Some(ref rtp) = active_call.rtp_stream {
                         rtp.stop();
                     }
+                    if let Some(ref stop) = active_call.call_stop {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     active_call.state = CallState::Ended;
 
-                    if let Some((ref transport, _)) = self.reg_transport {
+                    let transport = incoming_transport
+                        .or_else(|| active_call.call_transport.as_ref().map(|t| t.as_ref()))
+                        .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+
+                    if let Some(transport) = transport {
                         let mut ok_resp = SipMessage::new_response(200, "OK");
                         for via in msg.headers_all("Via") {
                             ok_resp.add_header("Via", via.to_string());
@@ -629,7 +716,9 @@ impl Engine {
             }
 
             Some(&SipMethod::Options) => {
-                if let Some((ref transport, _)) = self.reg_transport {
+                let transport = incoming_transport
+                    .or_else(|| self.reg_transport.as_ref().map(|(t, _)| t.as_ref()));
+                if let Some(transport) = transport {
                     let mut ok_resp = SipMessage::new_response(200, "OK");
                     for via in msg.headers_all("Via") {
                         ok_resp.add_header("Via", via.to_string());

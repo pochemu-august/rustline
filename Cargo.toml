@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/rustline-core",
     "crates/rustline-daemon",
-    "crates/rustline-cli",
 ]
 
 [workspace.package]

@@ -96,13 +96,13 @@ pub enum CoreCommand {
 
     /// Answer an incoming call.
     Answer {
-        call_id: String,
+        call_id: Option<String>,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
 
     /// Hang up an active or pending call.
     Hangup {
-        call_id: String,
+        call_id: Option<String>,
         response_tx: oneshot::Sender<Result<(), String>>,
     },
 

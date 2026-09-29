@@ -49,10 +49,11 @@ pub enum ClientMessage {
         id: Option<String>,
     },
 
-    /// Place an outgoing call (placeholder — will be implemented in later steps).
+    /// Place an outgoing call.
     Call {
         #[serde(default)]
         id: Option<String>,
+        #[serde(alias = "target", alias = "number")]
         destination: String,
     },
 
@@ -60,14 +61,17 @@ pub enum ClientMessage {
     Answer {
         #[serde(default)]
         id: Option<String>,
-        call_id: String,
+        #[serde(default)]
+        call_id: Option<String>,
     },
 
-    /// Hang up a call.
+    /// Hang up a call or reject an incoming call.
+    #[serde(alias = "end_call", alias = "reject")]
     Hangup {
         #[serde(default)]
         id: Option<String>,
-        call_id: String,
+        #[serde(default)]
+        call_id: Option<String>,
     },
 }
 
@@ -196,14 +200,17 @@ pub fn client_message_to_command(
             Ok(Some((id, CoreCommand::GetStatus { response_tx: tx })))
         }
 
-        ClientMessage::Call { id, .. } => {
-            Err(ResponseMessage::err(id, "call command not yet implemented"))
+        ClientMessage::Call { id, destination } => {
+            let (tx, _rx) = oneshot::channel();
+            Ok(Some((id, CoreCommand::Call { destination, response_tx: tx })))
         }
-        ClientMessage::Answer { id, .. } => {
-            Err(ResponseMessage::err(id, "answer command not yet implemented"))
+        ClientMessage::Answer { id, call_id } => {
+            let (tx, _rx) = oneshot::channel();
+            Ok(Some((id, CoreCommand::Answer { call_id, response_tx: tx })))
         }
-        ClientMessage::Hangup { id, .. } => {
-            Err(ResponseMessage::err(id, "hangup command not yet implemented"))
+        ClientMessage::Hangup { id, call_id } => {
+            let (tx, _rx) = oneshot::channel();
+            Ok(Some((id, CoreCommand::Hangup { call_id, response_tx: tx })))
         }
     }
 }

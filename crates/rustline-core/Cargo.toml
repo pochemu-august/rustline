@@ -18,6 +18,9 @@ hex = "0.4"
 # Unique identifiers for Call-ID, branch, tags
 rand = "0.8"
 
+# Real audio device I/O (Microphone & Speakers across Windows, Linux, macOS)
+cpal = "0.15"
+
 [[example]]
 name = "test_register"
 path = "examples/test_register.rs"

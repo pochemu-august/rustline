@@ -12,7 +12,7 @@ use std::time::Duration;
 use rand::Rng;
 use thiserror::Error;
 use tokio::net::UdpSocket;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 #[allow(unused_imports)]
 use crate::audio::g711;
@@ -108,6 +108,7 @@ pub struct RtpStream {
     pub local_port: u16,
     stop_signal: Arc<AtomicBool>,
     remote_addr: Arc<RwLock<SocketAddr>>,
+    audio_session: Option<Arc<crate::audio::device::AudioDeviceSession>>,
 }
 
 impl RtpStream {
@@ -142,13 +143,23 @@ impl RtpStream {
         let socket_arc = Arc::new(socket);
         let remote_addr_arc = Arc::new(RwLock::new(remote_rtp_addr));
 
-        // Queue for echo loopback (audio received from caller is sent back)
-        let (echo_tx, mut echo_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        // Start hardware audio session (physical microphone and speakers)
+        let audio_session = match crate::audio::device::AudioDeviceSession::start() {
+            Ok(session) => {
+                info!("hardware audio active (speakers & microphone ready)");
+                Some(Arc::new(session))
+            }
+            Err(e) => {
+                warn!("hardware audio unavailable ({e}), falling back to digital silence");
+                None
+            }
+        };
 
         // Transmitter task: sends 20ms frames (160 samples) of audio
         let tx_socket = Arc::clone(&socket_arc);
         let tx_stop = Arc::clone(&stop_signal);
         let tx_remote = Arc::clone(&remote_addr_arc);
+        let tx_audio = audio_session.clone();
 
         tokio::spawn(async move {
             let mut seq: u16 = rand::thread_rng().gen();
@@ -158,27 +169,12 @@ impl RtpStream {
             let mut ticker = tokio::time::interval(Duration::from_millis(20));
             let silence_frame = vec![0xFFu8; 160]; // 20ms @ 8000 Hz digital silence
 
-            let mut frame_idx: u64 = 0;
             let mut first = true;
             while !tx_stop.load(Ordering::Relaxed) {
                 ticker.tick().await;
-                frame_idx = frame_idx.wrapping_add(1);
 
-                // Priority 1: If caller spoke and we received audio, echo it back!
-                // Priority 2: When quiet, play a gentle periodic chime (200ms 440Hz tone every 3 seconds)
-                //             so caller can immediately verify audio is working.
-                let payload = if let Ok(p) = echo_rx.try_recv() {
-                    p
-                } else if frame_idx % 150 < 10 { // 10 frames = 200ms every 150 frames (3s)
-                    let mut beep = Vec::with_capacity(160);
-                    let phase_offset = (frame_idx % 150) * 160;
-                    for i in 0..160 {
-                        let t = (phase_offset + i as u64) as f32 / 8000.0;
-                        let sample = (2.0 * std::f32::consts::PI * 440.0 * t).sin();
-                        let pcm = (sample * 6000.0) as i16;
-                        beep.push(crate::audio::g711::linear_to_ulaw(pcm));
-                    }
-                    beep
+                let payload = if let Some(ref audio) = tx_audio {
+                    audio.read_mic_frame()
                 } else {
                     silence_frame.clone()
                 };
@@ -210,9 +206,10 @@ impl RtpStream {
             debug!("RTP transmitter task stopped");
         });
 
-        // Receiver task: reads incoming RTP packets and pushes to echo queue
+        // Receiver task: reads incoming RTP packets and plays them to physical speakers
         let rx_socket = Arc::clone(&socket_arc);
         let rx_stop = Arc::clone(&stop_signal);
+        let rx_audio = audio_session.clone();
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 1500];
@@ -227,7 +224,9 @@ impl RtpStream {
                                 len = pkt.payload.len(),
                                 "received RTP packet"
                             );
-                            let _ = echo_tx.try_send(pkt.payload);
+                            if let Some(ref audio) = rx_audio {
+                                audio.write_speaker_frame(&pkt.payload);
+                            }
                         }
                     }
                     Err(e) => {
@@ -252,12 +251,16 @@ impl RtpStream {
             local_port,
             stop_signal,
             remote_addr: remote_addr_arc,
+            audio_session,
         })
     }
 
     /// Stops the media stream.
     pub fn stop(&self) {
         self.stop_signal.store(true, Ordering::Relaxed);
+        if let Some(ref audio) = self.audio_session {
+            audio.stop();
+        }
     }
 }
 

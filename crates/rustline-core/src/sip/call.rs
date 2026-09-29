@@ -53,7 +53,8 @@ pub struct ActiveCall {
     pub cseq: u32,
     pub rtp_stream: Option<RtpStream>,
     /// The dedicated UDP transport for this call (owns the INVITE socket).
-    pub call_transport: Option<SipTransport>,
+    pub call_transport: Option<std::sync::Arc<SipTransport>>,
+    pub call_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ActiveCall {
@@ -63,11 +64,18 @@ impl ActiveCall {
         config: &RegisterConfig,
         default_transport: Option<&SipTransport>,
     ) -> Result<(), CallError> {
+        if let Some(ref stop) = self.call_stop {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let transport = match (&self.call_transport, default_transport) {
-            (Some(t), _) => t,
+            (Some(t), _) => t.as_ref(),
             (None, Some(t)) => t,
             (None, None) => {
                 // No transport — nothing to send, just mark ended.
+                if let Some(ref rtp) = self.rtp_stream {
+                    rtp.stop();
+                }
                 self.rtp_stream = None;
                 self.state = CallState::Ended;
                 return Ok(());
@@ -298,6 +306,7 @@ pub async fn start_outgoing_call(
         cseq,
         rtp_stream: Some(rtp_stream),
         call_transport: None, // engine fills this in after the call is established
+        call_stop: None,
     })
 }
 
@@ -509,6 +518,7 @@ pub async fn answer_incoming_call(
         cseq: invite.cseq,
         rtp_stream: Some(rtp_stream),
         call_transport: None,
+        call_stop: None,
     })
 }
 
