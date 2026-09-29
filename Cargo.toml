@@ -41,3 +41,7 @@ uuid = { version = "1", features = ["v4"] }
 
 # Crypto (Digest Auth MD5)
 md-5 = "0.10"
+
+# Audio I/O
+cpal = "0.15"
+

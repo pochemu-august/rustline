@@ -1,8 +1,7 @@
-//! RTP media pipeline stubs.
-//!
-//! Future: Will handle RTP packet sending/receiving, SRTP, and jitter buffering.
+//! RTP module re-exports.
 
-/// Placeholder for RTP session creation.
-pub fn create_session(_local_port: u16) -> Result<(), String> {
-    Err("RTP subsystem not yet implemented".to_string())
-}
+pub mod packet;
+pub mod session;
+
+pub use packet::RtpPacket;
+pub use session::{AudioBuffer, RtpSession};

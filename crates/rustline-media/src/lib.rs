@@ -1,30 +1,21 @@
 //! # rustline-media
 //!
-//! Audio I/O and RTP media pipeline for the rustline softphone.
+//! Pure Rust Audio I/O and RTP media pipeline for the rustline softphone.
 //!
-//! ## Current Status: Stubs
-//!
-//! This crate will eventually contain:
-//! - Audio capture/playback via `cpal`
-//! - RTP packet encoding/decoding
-//! - SRTP encryption
-//! - Codec negotiation (G.711 PCMA/PCMU first, then Opus)
-//! - Jitter buffer
-//!
-//! ## Planned codec support (from MicroSIP analysis)
-//!
-//! | Priority | Codec | Sample Rate |
-//! |----------|-------|-------------|
-//! | Default  | PCMA (G.711 A-law) | 8 kHz |
-//! | Default  | PCMU (G.711 μ-law) | 8 kHz |
-//! | Optional | Opus | 48 kHz |
-//! | Optional | G.722 | 16 kHz |
+//! - Audio capture/playback via `cpal` (WASAPI / ALSA / CoreAudio)
+//! - Pure Rust ITU-T G.711 PCMA (A-law) and PCMU (μ-law) codecs
+//! - Pure Rust RFC 3550 RTP packet encoder/decoder
+//! - Background RTP UDP streaming session with jitter buffering
 
 pub mod audio;
+pub mod codec;
 pub mod rtp;
 
-/// Placeholder: Check if the media subsystem is available.
+pub use audio::{AudioEngine, is_audio_available};
+pub use codec::g711;
+pub use rtp::{AudioBuffer, RtpPacket, RtpSession};
+
+/// Check if the media subsystem (audio devices) is available on the current host.
 pub fn is_available() -> bool {
-    // Will return true once cpal is initialized
-    false
+    audio::is_audio_available()
 }

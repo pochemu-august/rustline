@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 tracing = { workspace = true }
 thiserror = { workspace = true }
-# Future dependencies:
-# cpal = "0.15"           # Audio I/O
-# webrtc = "0.11"         # RTP / SRTP / ICE
+anyhow = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+cpal = { workspace = true }
+

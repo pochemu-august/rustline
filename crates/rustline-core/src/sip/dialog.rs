@@ -29,6 +29,10 @@ pub struct SipDialog {
     pub incoming_to: Option<String>,
     /// True if this call was received from Asterisk (inbound).
     pub is_inbound: bool,
+    /// Remote RTP audio endpoint (IP and port).
+    pub remote_rtp_addr: Option<std::net::SocketAddr>,
+    /// Local RTP port used for this dialog.
+    pub local_rtp_port: u16,
 }
 
 impl SipDialog {
@@ -49,6 +53,8 @@ impl SipDialog {
             incoming_from: None,
             incoming_to: None,
             is_inbound: false,
+            remote_rtp_addr: None,
+            local_rtp_port: 10030,
         }
     }
 
@@ -78,6 +84,8 @@ impl SipDialog {
             incoming_from: Some(from),
             incoming_to: Some(to),
             is_inbound: true,
+            remote_rtp_addr: None,
+            local_rtp_port: 10030,
         }
     }
 }
@@ -86,6 +94,37 @@ impl SipDialog {
 pub fn rand_u32() -> u32 {
     let bytes = *Uuid::new_v4().as_bytes();
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Parse remote IP address and RTP audio port from raw SDP bytes.
+pub fn parse_sdp_audio_endpoint(sdp_bytes: &[u8]) -> Option<std::net::SocketAddr> {
+    let sdp_str = std::str::from_utf8(sdp_bytes).ok()?;
+    let mut ip_str = None;
+    let mut port = None;
+
+    for line in sdp_str.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("c=") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("IP4") {
+                ip_str = Some(parts[2].to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("m=audio ") {
+            if let Some(port_str) = rest.split_whitespace().next() {
+                if let Ok(p) = port_str.parse::<u16>() {
+                    port = Some(p);
+                }
+            }
+        }
+    }
+
+    if let (Some(ip), Some(port)) = (ip_str, port) {
+        format!("{}:{}", ip, port)
+            .parse::<std::net::SocketAddr>()
+            .ok()
+    } else {
+        None
+    }
 }
 
 /// Generate a basic SDP body for PCMA/PCMU audio on a local RTP port.

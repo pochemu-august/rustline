@@ -13,7 +13,7 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use super::auth::{DigestChallenge, calculate_authorization};
-use super::dialog::{SipDialog, build_sdp, rand_u32};
+use super::dialog::{SipDialog, build_sdp, parse_sdp_audio_endpoint, rand_u32};
 use super::transport::SipTransport;
 use crate::account::AccountConfig;
 use crate::engine::EngineEvent;
@@ -29,6 +29,17 @@ pub struct SipClient {
     auth_nc: AtomicU32,
     dialogs: Arc<Mutex<HashMap<String, SipDialog>>>,
     response_waiters: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<rsip::Response>>>>,
+    active_rtp: Arc<
+        Mutex<
+            HashMap<
+                String,
+                (
+                    rustline_media::RtpSession,
+                    Option<rustline_media::AudioEngine>,
+                ),
+            >,
+        >,
+    >,
     engine_tx: mpsc::UnboundedSender<EngineEvent>,
 }
 
@@ -52,6 +63,7 @@ impl SipClient {
             auth_nc: AtomicU32::new(1),
             dialogs: Arc::new(Mutex::new(HashMap::new())),
             response_waiters: Arc::new(Mutex::new(HashMap::new())),
+            active_rtp: Arc::new(Mutex::new(HashMap::new())),
             engine_tx,
         });
 
@@ -64,6 +76,57 @@ impl SipClient {
     /// Access the underlying transport.
     pub fn transport(&self) -> &SipTransport {
         &self.transport
+    }
+
+    /// Start RTP media streaming and CPAL audio hardware pipeline for a call.
+    async fn start_media_session(&self, call_id: &str, remote_rtp: Option<std::net::SocketAddr>) {
+        let local_ip = self.transport.local_ip().to_string();
+        let local_rtp_port = 10030;
+
+        info!(%call_id, ?remote_rtp, "Starting media pipeline (RTP + CPAL Audio)");
+
+        let playback_buf = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        match rustline_media::RtpSession::start(
+            &local_ip,
+            local_rtp_port,
+            remote_rtp,
+            Arc::clone(&playback_buf),
+        )
+        .await
+        {
+            Ok((rtp_session, mic_tx)) => {
+                let audio_engine = if rustline_media::is_available() {
+                    Some(rustline_media::AudioEngine::new(mic_tx, playback_buf))
+                } else {
+                    warn!("Audio hardware not available, running RTP in headless mode");
+                    None
+                };
+
+                let mut rtp_map = self.active_rtp.lock().await;
+                rtp_map.insert(call_id.to_string(), (rtp_session, audio_engine));
+            }
+            Err(e) => {
+                error!(%call_id, "Failed to start RTP session: {}", e);
+            }
+        }
+    }
+
+    /// Stop and clean up RTP media streaming and CPAL audio hardware pipeline for a call.
+    async fn stop_media_session(&self, call_id: &str) {
+        let mut rtp_map = self.active_rtp.lock().await;
+        if let Some((mut rtp_session, audio_engine)) = rtp_map.remove(call_id) {
+            info!(%call_id, "Stopping media pipeline");
+            rtp_session.stop();
+            drop(audio_engine);
+        }
+    }
+
+    /// Update destination remote RTP address (e.g. from re-INVITE SDP).
+    async fn update_media_remote(&self, call_id: &str, new_remote: std::net::SocketAddr) {
+        let rtp_map = self.active_rtp.lock().await;
+        if let Some((rtp_session, _)) = rtp_map.get(call_id) {
+            rtp_session.set_remote_addr(new_remote).await;
+        }
     }
 
     /// Spawn the continuous background UDP packet listener.
@@ -187,6 +250,10 @@ impl SipClient {
                         }
                     }
 
+                    if let Some(new_rtp) = parse_sdp_audio_endpoint(req.body()) {
+                        self.update_media_remote(&call_id, new_rtp).await;
+                    }
+
                     // Directly respond with 200 OK + SDP (in-dialog To header already has our local tag)
                     let local_ip = self.transport.local_ip().to_string();
                     let local_port = self.transport.local_port();
@@ -216,11 +283,13 @@ impl SipClient {
                 let remote_tag = extract_tag_from_header(&from_str);
                 let contact_str = extract_header_val(headers, "Contact");
                 let remote_contact = contact_str.as_deref().map(extract_contact_uri);
+                let remote_rtp = parse_sdp_audio_endpoint(req.body());
                 let cseq_num = parse_cseq_num(&cseq_str);
 
                 info!(
                     caller = %caller_uri,
                     call_id = %call_id,
+                    ?remote_rtp,
                     "📞 Incoming SIP call from Asterisk!"
                 );
 
@@ -238,6 +307,7 @@ impl SipClient {
                     to_str.clone(),
                 );
                 dialog.remote_contact = remote_contact;
+                dialog.remote_rtp_addr = remote_rtp;
                 let local_tag = dialog.local_tag.clone();
 
                 {
@@ -300,6 +370,7 @@ impl SipClient {
             // Remote hangup
             rsip::Method::Bye => {
                 info!(call_id = %call_id, "Remote party hung up (BYE received)");
+                self.stop_media_session(&call_id).await;
 
                 let reply = format!(
                     "SIP/2.0 200 OK\r\n\
@@ -338,6 +409,7 @@ impl SipClient {
             // Remote cancelled call before answer
             rsip::Method::Cancel => {
                 info!(call_id = %call_id, "Call cancelled by remote (CANCEL received)");
+                self.stop_media_session(&call_id).await;
 
                 // 200 OK for CANCEL
                 let cancel_ok = format!(
@@ -763,6 +835,9 @@ impl SipClient {
                             reason: Some("OK".to_string()),
                         },
                     )));
+
+                let remote_rtp = parse_sdp_audio_endpoint(res.body());
+                self.start_media_session(call_id, remote_rtp).await;
                 break;
             } else if code >= 400 {
                 // Call rejected / busy
@@ -858,11 +933,16 @@ impl SipClient {
                 },
             )));
 
+        let remote_rtp = dialog.remote_rtp_addr;
+        self.start_media_session(call_id, remote_rtp).await;
+
         Ok(())
     }
 
     /// Hang up an active or ringing call.
     pub async fn hangup(&self, call_id: &str) -> Result<()> {
+        self.stop_media_session(call_id).await;
+
         let dialog = {
             let mut dialogs = self.dialogs.lock().await;
             dialogs.remove(call_id)
