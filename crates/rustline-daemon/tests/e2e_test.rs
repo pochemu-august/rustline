@@ -65,6 +65,31 @@ async fn test_control_api_status_query() {
     let _ = engine_task.await;
 }
 
+#[tokio::test]
+async fn test_control_api_call_when_unregistered() {
+    let (engine, handle) = Engine::new();
+    let engine_task = tokio::spawn(engine.run());
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    handle
+        .send_command(CoreCommand::Call {
+            destination: "101".into(),
+            response_tx: tx,
+        })
+        .await
+        .unwrap();
+
+    let res = rx.await.unwrap();
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err(),
+        "cannot place call: not registered on a SIP server"
+    );
+
+    let _ = handle.send_command(CoreCommand::Shutdown).await;
+    let _ = engine_task.await;
+}
+
 fn rustline_daemon_test_config(port: u16) -> rustline_daemon_config::Config {
     rustline_daemon_config::Config {
         listen_addr: "127.0.0.1".into(),

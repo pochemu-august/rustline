@@ -300,28 +300,107 @@ async fn process_client_command(
             }
         }
 
-        ClientMessage::Call { id, .. } => {
-            send_response(
-                outgoing_tx,
-                ResponseMessage::err(id, "call command not implemented yet"),
-            )
-            .await;
+        ClientMessage::Call { id, destination } => {
+            let (tx, rx) = oneshot::channel();
+            let core_cmd = CoreCommand::Call {
+                destination,
+                response_tx: tx,
+            };
+
+            if let Err(e) = engine.send_command(core_cmd).await {
+                send_response(
+                    outgoing_tx,
+                    ResponseMessage::err(id, format!("engine channel error: {e}")),
+                )
+                .await;
+                return;
+            }
+
+            match rx.await {
+                Ok(Ok(call_id)) => {
+                    send_response(
+                        outgoing_tx,
+                        ResponseMessage::ok_with_data(id, serde_json::json!({ "call_id": call_id })),
+                    )
+                    .await;
+                }
+                Ok(Err(err)) => {
+                    send_response(outgoing_tx, ResponseMessage::err(id, err)).await;
+                }
+                Err(_) => {
+                    send_response(
+                        outgoing_tx,
+                        ResponseMessage::err(id, "engine dropped response channel"),
+                    )
+                    .await;
+                }
+            }
         }
 
-        ClientMessage::Answer { id, .. } => {
-            send_response(
-                outgoing_tx,
-                ResponseMessage::err(id, "answer command not implemented yet"),
-            )
-            .await;
+        ClientMessage::Answer { id, call_id } => {
+            let (tx, rx) = oneshot::channel();
+            let core_cmd = CoreCommand::Answer {
+                call_id,
+                response_tx: tx,
+            };
+
+            if let Err(e) = engine.send_command(core_cmd).await {
+                send_response(
+                    outgoing_tx,
+                    ResponseMessage::err(id, format!("engine channel error: {e}")),
+                )
+                .await;
+                return;
+            }
+
+            match rx.await {
+                Ok(Ok(())) => {
+                    send_response(outgoing_tx, ResponseMessage::ok(id)).await;
+                }
+                Ok(Err(err)) => {
+                    send_response(outgoing_tx, ResponseMessage::err(id, err)).await;
+                }
+                Err(_) => {
+                    send_response(
+                        outgoing_tx,
+                        ResponseMessage::err(id, "engine dropped response channel"),
+                    )
+                    .await;
+                }
+            }
         }
 
-        ClientMessage::Hangup { id, .. } => {
-            send_response(
-                outgoing_tx,
-                ResponseMessage::err(id, "hangup command not implemented yet"),
-            )
-            .await;
+        ClientMessage::Hangup { id, call_id } => {
+            let (tx, rx) = oneshot::channel();
+            let core_cmd = CoreCommand::Hangup {
+                call_id,
+                response_tx: tx,
+            };
+
+            if let Err(e) = engine.send_command(core_cmd).await {
+                send_response(
+                    outgoing_tx,
+                    ResponseMessage::err(id, format!("engine channel error: {e}")),
+                )
+                .await;
+                return;
+            }
+
+            match rx.await {
+                Ok(Ok(())) => {
+                    send_response(outgoing_tx, ResponseMessage::ok(id)).await;
+                }
+                Ok(Err(err)) => {
+                    send_response(outgoing_tx, ResponseMessage::err(id, err)).await;
+                }
+                Err(_) => {
+                    send_response(
+                        outgoing_tx,
+                        ResponseMessage::err(id, "engine dropped response channel"),
+                    )
+                    .await;
+                }
+            }
         }
     }
 }

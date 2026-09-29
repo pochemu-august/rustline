@@ -65,6 +65,12 @@ async fn main() {
                 CoreEvent::RegistrationStateChanged { state } => {
                     println!("  📡 Event: RegistrationStateChanged → {state:?}");
                 }
+                CoreEvent::CallStateChanged { call_id, state } => {
+                    println!("  📞 Event: CallStateChanged (call_id={call_id}) → {state:?}");
+                }
+                CoreEvent::IncomingCall { call_id, from } => {
+                    println!("  🔔 Event: IncomingCall (call_id={call_id}) from {from}");
+                }
                 CoreEvent::Error { call_id, message } => {
                     println!("  ❌ Event: Error (call_id={call_id:?}) → {message}");
                 }

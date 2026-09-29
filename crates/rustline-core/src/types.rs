@@ -88,13 +88,26 @@ pub enum CoreCommand {
         response_tx: oneshot::Sender<StatusResponse>,
     },
 
+    /// Place an outgoing call to the specified destination.
+    Call {
+        destination: String,
+        response_tx: oneshot::Sender<Result<String, String>>,
+    },
+
+    /// Answer an incoming call.
+    Answer {
+        call_id: String,
+        response_tx: oneshot::Sender<Result<(), String>>,
+    },
+
+    /// Hang up an active or pending call.
+    Hangup {
+        call_id: String,
+        response_tx: oneshot::Sender<Result<(), String>>,
+    },
+
     /// Gracefully shut down the engine loop.
     Shutdown,
-
-    // ── Call-related commands (will be added in later steps) ──
-    // Call { destination, response_tx }
-    // Answer { call_id, response_tx }
-    // Hangup { call_id, response_tx }
 }
 
 // ── Events (core → control layer) ──────────────────────────────────────────
@@ -107,13 +120,21 @@ pub enum CoreEvent {
         state: RegistrationState,
     },
 
+    /// Call state transitioned.
+    CallStateChanged {
+        call_id: String,
+        state: CallState,
+    },
+
     /// An error occurred (optionally tied to a specific call).
     Error {
         call_id: Option<String>,
         message: String,
     },
 
-    // ── Call-related events (later steps) ──
-    // IncomingCall { call_id, from }
-    // CallStateChanged { call_id, state }
+    /// An incoming call is ringing — UI should display "Answer" / "Decline".
+    IncomingCall {
+        call_id: String,
+        from: String,
+    },
 }

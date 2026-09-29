@@ -235,6 +235,30 @@ pub fn core_event_to_message(event: &CoreEvent) -> EventMessage {
             }
         }
 
+        CoreEvent::CallStateChanged { call_id, state } => {
+            let state_str = match state {
+                CallState::Calling => "calling",
+                CallState::Ringing => "ringing",
+                CallState::Active => "active",
+                CallState::Ended => "ended",
+            };
+            EventMessage {
+                event: "call_state_changed".into(),
+                data: serde_json::json!({
+                    "call_id": call_id,
+                    "state": state_str,
+                }),
+            }
+        }
+
+        CoreEvent::IncomingCall { call_id, from } => EventMessage {
+            event: "incoming_call".into(),
+            data: serde_json::json!({
+                "call_id": call_id,
+                "from": from,
+            }),
+        },
+
         CoreEvent::Error { call_id, message } => EventMessage {
             event: "error".into(),
             data: serde_json::json!({

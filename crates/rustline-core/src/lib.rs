@@ -47,6 +47,8 @@
 //! }
 //! ```
 
+pub mod audio;
 pub mod engine;
+pub mod rtp;
 pub mod sip;
 pub mod types;

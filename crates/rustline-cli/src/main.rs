@@ -43,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
+    let active_call_id = std::sync::Arc::new(tokio::sync::Mutex::new(None::<String>));
+    let call_id_tracker = std::sync::Arc::clone(&active_call_id);
+
     // Background task: listen for incoming messages and print them
     let reader_task = tokio::spawn(async move {
         while let Some(msg_result) = ws_rx.next().await {
@@ -51,9 +54,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(event_name) = v.get("event").and_then(|e| e.as_str()) {
                             println!("\n📡 [EVENT: {}] {}", event_name, text);
+                            if event_name == "incoming_call" {
+                                if let Some(cid) = v.get("call_id").and_then(|c| c.as_str()) {
+                                    *call_id_tracker.lock().await = Some(cid.to_string());
+                                }
+                            } else if event_name == "call_state_changed" {
+                                if let Some(st) = v.get("state").and_then(|s| s.as_str()) {
+                                    if st == "ended" {
+                                        *call_id_tracker.lock().await = None;
+                                    } else if let Some(cid) = v.get("call_id").and_then(|c| c.as_str()) {
+                                        *call_id_tracker.lock().await = Some(cid.to_string());
+                                    }
+                                }
+                            }
                         } else if let Some(ok) = v.get("ok").and_then(|o| o.as_bool()) {
                             if ok {
                                 println!("\n✅ [RESPONSE] {}", text);
+                                if let Some(cid) = v.get("data").and_then(|d| d.get("call_id")).and_then(|c| c.as_str()) {
+                                    *call_id_tracker.lock().await = Some(cid.to_string());
+                                }
                             } else {
                                 println!("\n❌ [ERROR RESPONSE] {}", text);
                             }
@@ -156,6 +175,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 send_json(&mut ws_tx, msg).await?;
             }
 
+            "call" => {
+                if parts.len() < 2 {
+                    println!("Usage: call <destination>");
+                    println!("  Example: call 101");
+                } else {
+                    let msg = json!({
+                        "command": "call",
+                        "id": next_id(),
+                        "destination": parts[1]
+                    });
+                    send_json(&mut ws_tx, msg).await?;
+                }
+            }
+
+            "answer" => {
+                let cid_opt = if parts.len() >= 2 {
+                    Some(parts[1].to_string())
+                } else {
+                    active_call_id.lock().await.clone()
+                };
+
+                match cid_opt {
+                    Some(cid) => {
+                        println!("📞 Answering call {cid}...");
+                        let msg = json!({
+                            "command": "answer",
+                            "id": next_id(),
+                            "call_id": cid
+                        });
+                        send_json(&mut ws_tx, msg).await?;
+                    }
+                    None => {
+                        println!("❌ No call to answer. Usage: answer <call_id>");
+                    }
+                }
+            }
+
+            "hangup" => {
+                let cid_opt = if parts.len() >= 2 {
+                    Some(parts[1].to_string())
+                } else {
+                    active_call_id.lock().await.clone()
+                };
+
+                match cid_opt {
+                    Some(cid) => {
+                        println!("📴 Hanging up call {cid}...");
+                        let msg = json!({
+                            "command": "hangup",
+                            "id": next_id(),
+                            "call_id": cid
+                        });
+                        send_json(&mut ws_tx, msg).await?;
+                    }
+                    None => {
+                        println!("❌ No active call to hang up. Usage: hangup <call_id>");
+                    }
+                }
+            }
+
             "raw" => {
                 // Send raw JSON string after "raw "
                 if parts.len() > 1 {
@@ -200,6 +279,9 @@ fn print_help() {
     println!("  register <server> <port> <user> <pass> [udp|tls]  - Register on SIP server");
     println!("  unregister                                       - Unregister from SIP server");
     println!("  status                                           - Query daemon registration & call status");
+    println!("  call <destination>                               - Place an outgoing call (e.g. call 101)");
+    println!("  answer <call_id>                                 - Answer an incoming ringing call");
+    println!("  hangup <call_id>                                 - Hang up a call");
     println!("  auth <token>                                     - Authenticate if daemon requires token");
     println!("  raw <json>                                       - Send raw JSON message");
     println!("  help / ?                                         - Show this help");
