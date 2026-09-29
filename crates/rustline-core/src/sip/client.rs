@@ -19,6 +19,13 @@ use crate::account::AccountConfig;
 use crate::engine::EngineEvent;
 use rustline_proto::events::{CallDirection, CallState, CallStateChanged, Event, IncomingCall};
 
+/// Active media session tuple: (RTP session, optional OS audio hardware engine).
+pub type CallMediaSession = (
+    rustline_media::RtpSession,
+    Option<rustline_media::AudioEngine>,
+);
+type ActiveMediaMap = Arc<Mutex<HashMap<String, CallMediaSession>>>;
+
 /// High-level SIP client.
 pub struct SipClient {
     config: AccountConfig,
@@ -29,17 +36,7 @@ pub struct SipClient {
     auth_nc: AtomicU32,
     dialogs: Arc<Mutex<HashMap<String, SipDialog>>>,
     response_waiters: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<rsip::Response>>>>,
-    active_rtp: Arc<
-        Mutex<
-            HashMap<
-                String,
-                (
-                    rustline_media::RtpSession,
-                    Option<rustline_media::AudioEngine>,
-                ),
-            >,
-        >,
-    >,
+    active_rtp: ActiveMediaMap,
     engine_tx: mpsc::UnboundedSender<EngineEvent>,
 }
 

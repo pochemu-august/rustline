@@ -109,12 +109,11 @@ pub fn parse_sdp_audio_endpoint(sdp_bytes: &[u8]) -> Option<std::net::SocketAddr
             if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("IP4") {
                 ip_str = Some(parts[2].to_string());
             }
-        } else if let Some(rest) = line.strip_prefix("m=audio ") {
-            if let Some(port_str) = rest.split_whitespace().next() {
-                if let Ok(p) = port_str.parse::<u16>() {
-                    port = Some(p);
-                }
-            }
+        } else if let Some(p) = line
+            .strip_prefix("m=audio ")
+            .and_then(|rest| rest.split_whitespace().next()?.parse::<u16>().ok())
+        {
+            port = Some(p);
         }
     }
 
