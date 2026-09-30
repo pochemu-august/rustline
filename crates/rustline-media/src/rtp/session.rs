@@ -19,6 +19,7 @@ pub type AudioBuffer = Arc<std::sync::Mutex<VecDeque<i16>>>;
 pub struct RtpSession {
     local_port: u16,
     remote_addr: Arc<Mutex<Option<SocketAddr>>>,
+    is_sdp_configured: Arc<AtomicBool>,
     is_running: Arc<AtomicBool>,
     _seq_num: Arc<AtomicU16>,
     _timestamp: Arc<AtomicU32>,
@@ -50,7 +51,9 @@ impl RtpSession {
             "Started RTP audio session"
         );
 
+        let has_initial = initial_remote.is_some();
         let remote_addr = Arc::new(Mutex::new(initial_remote));
+        let is_sdp_configured = Arc::new(AtomicBool::new(has_initial));
         let is_running = Arc::new(AtomicBool::new(true));
         let seq_num = Arc::new(AtomicU16::new(1000));
         let timestamp = Arc::new(AtomicU32::new(16000));
@@ -64,6 +67,7 @@ impl RtpSession {
         // --- Task 1: RTP Packet Receiver ---
         let recv_socket = Arc::clone(&socket);
         let recv_remote = Arc::clone(&remote_addr);
+        let recv_sdp_auth = Arc::clone(&is_sdp_configured);
         let recv_running = Arc::clone(&is_running);
         let recv_playback = Arc::clone(&playback_buf);
         let mut stop_rx1 = stop_tx.subscribe();
@@ -89,10 +93,11 @@ impl RtpSession {
                         }
 
                         // Auto-learn remote RTP address (symmetric RTP / NAT traversal)
-                        {
+                        // ONLY if not explicitly configured by SDP signaling
+                        if !recv_sdp_auth.load(Ordering::Relaxed) {
                             let mut rem = recv_remote.lock().await;
-                            if rem.is_none() || rem.as_ref() != Some(&src_addr) {
-                                debug!(%src_addr, "Learned remote RTP source address");
+                            if rem.is_none() {
+                                debug!(%src_addr, "Learned remote RTP source address via symmetric RTP");
                                 *rem = Some(src_addr);
                             }
                         }
@@ -192,6 +197,7 @@ impl RtpSession {
         let session = Self {
             local_port: actual_port,
             remote_addr,
+            is_sdp_configured: Arc::clone(&is_sdp_configured),
             is_running,
             _seq_num: seq_num,
             _timestamp: timestamp,
@@ -204,11 +210,12 @@ impl RtpSession {
         Ok((session, mic_tx))
     }
 
-    /// Update the remote target address (e.g. from SDP answer).
+    /// Update the remote target address (e.g. from SDP answer or re-INVITE).
     pub async fn set_remote_addr(&self, addr: SocketAddr) {
         let mut rem = self.remote_addr.lock().await;
         *rem = Some(addr);
-        info!(remote_addr = %addr, "Set RTP destination address");
+        self.is_sdp_configured.store(true, Ordering::SeqCst);
+        info!(remote_addr = %addr, "Set authoritative RTP destination address from SDP");
     }
 
     /// Stop the RTP session and background sender/receiver tasks.

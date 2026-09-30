@@ -126,7 +126,8 @@ fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyh
 
     let err_fn = |err| error!("Audio output stream error: {}", err);
 
-    // State for 8kHz upsampling
+    // State for 8kHz upsampling with linear interpolation
+    let mut prev_sample: i16 = 0;
     let mut current_sample: i16 = 0;
     let mut sample_phase: f32 = 0.0;
     let phase_step = 8000.0 / sample_rate as f32;
@@ -141,6 +142,7 @@ fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyh
                     sample_phase += phase_step;
                     if sample_phase >= 1.0 {
                         sample_phase -= 1.0;
+                        prev_sample = current_sample;
                         if let Some(ref mut q) = buf_lock {
                             current_sample = q.pop_front().unwrap_or(0);
                         } else {
@@ -148,9 +150,18 @@ fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyh
                         }
                     }
 
-                    let val = current_sample as f32 / 32768.0;
-                    for sample in frame.iter_mut() {
-                        *sample = val;
+                    // Linear interpolation between consecutive 8kHz samples for smooth playback
+                    let interp =
+                        prev_sample as f32 + (current_sample - prev_sample) as f32 * sample_phase;
+                    let val = (interp / 32768.0).clamp(-1.0, 1.0);
+
+                    // Output voice to Left & Right channels only (mute surround/LFE channels to prevent distortion)
+                    for (ch, sample) in frame.iter_mut().enumerate() {
+                        if ch < 2 {
+                            *sample = val;
+                        } else {
+                            *sample = 0.0;
+                        }
                     }
                 }
             },
@@ -180,16 +191,36 @@ fn setup_input_stream(
     let mut sample_phase: f32 = 0.0;
     let phase_step = 8000.0 / sample_rate as f32;
 
+    // Moving average decimation accumulator for anti-aliasing downsampling
+    let mut input_sum: f32 = 0.0;
+    let mut input_count: usize = 0;
+
     let stream = match default_config.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
             &default_config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 for frame in data.chunks(channels) {
+                    let mono_in: f32 = if channels == 1 {
+                        frame[0]
+                    } else {
+                        (frame[0] + frame[1]) * 0.5
+                    };
+                    input_sum += mono_in;
+                    input_count += 1;
+
                     sample_phase += phase_step;
                     if sample_phase >= 1.0 {
                         sample_phase -= 1.0;
-                        let mono_f32 = frame[0].clamp(-1.0, 1.0);
-                        let pcm16 = (mono_f32 * 32767.0) as i16;
+
+                        let avg = if input_count > 0 {
+                            input_sum / input_count as f32
+                        } else {
+                            mono_in
+                        };
+                        input_sum = 0.0;
+                        input_count = 0;
+
+                        let pcm16 = (avg.clamp(-1.0, 1.0) * 32767.0) as i16;
                         accumulator.push(pcm16);
 
                         if accumulator.len() >= SAMPLES_PER_FRAME {

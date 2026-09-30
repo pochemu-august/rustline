@@ -279,7 +279,7 @@ class MicroSipCloneApp:
             self.status_var.set(state_ru.get(state, state))
 
         elif event_name == "incoming_call":
-            name = data.get("caller_name", data.get("caller_uri", "Unknown"))
+            name = data.get("caller_name") or data.get("caller_uri") or "Unknown"
             call_id = data.get("call_id")
             if messagebox.askyesno("Входящий вызов", f"Входящий звонок от: {name}\nОтветить?"):
                 self.current_call_id = call_id
