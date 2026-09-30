@@ -1,3 +1,6 @@
 /target
 /msc
 /dist
+*.log
+rustline_session.log
+start.bat
