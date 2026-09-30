@@ -4,3 +4,5 @@
 *.log
 rustline_session.log
 start.bat
+/rustline-gui/__pycache__
+/rustline-gui/venv
