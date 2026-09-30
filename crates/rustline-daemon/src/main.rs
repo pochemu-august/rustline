@@ -229,6 +229,14 @@ async fn process_request(state: &AppState, text: &str) -> Value {
                 Ok(params) => engine.handle_hold(params).await,
                 Err(e) => Err(format!("Invalid params: {e}")),
             },
+            "mute_mic" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_mute_mic(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
+            "mute_speaker" => match serde_json::from_value(request.params) {
+                Ok(params) => engine.handle_mute_speaker(params).await,
+                Err(e) => Err(format!("Invalid params: {e}")),
+            },
             "dtmf" => match serde_json::from_value(request.params) {
                 Ok(params) => engine.handle_dtmf(params).await,
                 Err(e) => Err(format!("Invalid params: {e}")),

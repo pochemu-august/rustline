@@ -85,6 +85,24 @@ pub struct HoldParams {
     pub call_id: String,
 }
 
+/// Parameters for the `mute_mic` command.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MuteMicParams {
+    /// Optional call ID (if omitted, applies to active call).
+    pub call_id: Option<String>,
+    /// Explicit mute state (true = mute, false = unmute). If None, toggles.
+    pub muted: Option<bool>,
+}
+
+/// Parameters for the `mute_speaker` command.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MuteSpeakerParams {
+    /// Optional call ID (if omitted, applies to active call).
+    pub call_id: Option<String>,
+    /// Explicit mute state (true = mute, false = unmute). If None, toggles.
+    pub muted: Option<bool>,
+}
+
 /// Parameters for the `dtmf` command.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DtmfParams {
@@ -111,6 +129,8 @@ pub enum Command {
     Answer(AnswerParams),
     Hangup(HangupParams),
     Hold(HoldParams),
+    MuteMic(MuteMicParams),
+    MuteSpeaker(MuteSpeakerParams),
     Dtmf(DtmfParams),
     GetStatus(GetStatusParams),
 }

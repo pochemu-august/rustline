@@ -108,6 +108,25 @@ class RustlineClient:
     async def hangup(self, call_id: str):
         return await self.send("hangup", {"call_id": call_id})
 
+    async def hold(self, call_id: str):
+        return await self.send("hold", {"call_id": call_id})
+
+    async def mute_mic(self, call_id: str = None, muted: bool = None):
+        params = {}
+        if call_id:
+            params["call_id"] = call_id
+        if muted is not None:
+            params["muted"] = muted
+        return await self.send("mute_mic", params)
+
+    async def mute_speaker(self, call_id: str = None, muted: bool = None):
+        params = {}
+        if call_id:
+            params["call_id"] = call_id
+        if muted is not None:
+            params["muted"] = muted
+        return await self.send("mute_speaker", params)
+
     def close(self):
         self._closing = True
 
@@ -118,7 +137,7 @@ class MicroSipCloneApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("rustline — SIP Client")
-        self.root.geometry("340x500")
+        self.root.geometry("340x535")
         self.root.resizable(False, False)
 
         # Файл логов (из переменной окружения или по умолчанию)
@@ -130,6 +149,9 @@ class MicroSipCloneApp:
         self.client = RustlineClient()
         self.loop = None
         self.current_call_id = None
+        self.is_mic_muted = False
+        self.is_speaker_muted = False
+        self.is_on_hold = False
 
         self._build_ui()
         self._start_async()
@@ -177,13 +199,26 @@ class MicroSipCloneApp:
             btn.grid(row=row, column=col, padx=3, pady=3, ipady=4)
 
         action_frame = ttk.Frame(self.tab_dialer)
-        action_frame.pack(fill="x", padx=15, pady=10)
+        action_frame.pack(fill="x", padx=15, pady=(8, 4))
 
         self.btn_call = ttk.Button(action_frame, text="📞 Вызов (Call)", command=self._on_call)
         self.btn_call.pack(side="left", expand=True, fill="x", padx=(0, 2), ipady=3)
 
         self.btn_hangup = ttk.Button(action_frame, text="❌ Сброс (Hangup)", command=self._on_hangup, state="disabled")
         self.btn_hangup.pack(side="right", expand=True, fill="x", padx=(2, 0), ipady=3)
+
+        # Дополнительная панель управления звуком и удержанием (как в MicroSIP)
+        in_call_frame = ttk.Frame(self.tab_dialer)
+        in_call_frame.pack(fill="x", padx=15, pady=(4, 8))
+
+        self.btn_mic = ttk.Button(in_call_frame, text="🎤 Микрофон", command=self._on_toggle_mic, state="disabled")
+        self.btn_mic.pack(side="left", expand=True, fill="x", padx=1, ipady=3)
+
+        self.btn_speaker = ttk.Button(in_call_frame, text="🔊 Динамик", command=self._on_toggle_speaker, state="disabled")
+        self.btn_speaker.pack(side="left", expand=True, fill="x", padx=1, ipady=3)
+
+        self.btn_hold = ttk.Button(in_call_frame, text="⏸️ Холд", command=self._on_toggle_hold, state="disabled")
+        self.btn_hold.pack(side="left", expand=True, fill="x", padx=1, ipady=3)
 
     def _build_account_tab(self):
         ttk.Label(self.tab_account, text="Сервер Asterisk:").grid(row=0, column=0, sticky="w", padx=10, pady=8)
@@ -290,16 +325,31 @@ class MicroSipCloneApp:
         elif event_name == "call_state_changed":
             state = data.get("state")
             call_id = data.get("call_id")
-            if state in ("early", "confirmed", "incoming"):
+            if state in ("early", "confirmed", "incoming", "held"):
                 self.current_call_id = call_id
                 self.btn_hangup.config(state="normal")
+                self.btn_mic.config(state="normal")
+                self.btn_speaker.config(state="normal")
+                self.btn_hold.config(state="normal")
 
             if state == "confirmed":
+                self.is_on_hold = False
+                self.btn_hold.config(text="⏸️ Холд")
                 self.status_var.set("🔊 Разговор (RTP звук активен)")
+            elif state == "held":
+                self.is_on_hold = True
+                self.btn_hold.config(text="▶️ Снять холд")
+                self.status_var.set("⏸️ Вызов на удержании (Hold)")
             elif state == "early":
                 self.status_var.set("🔔 Гудки (180 Ringing)...")
             elif state == "disconnected":
                 self.btn_hangup.config(state="disabled")
+                self.btn_mic.config(state="disabled", text="🎤 Микрофон")
+                self.btn_speaker.config(state="disabled", text="🔊 Динамик")
+                self.btn_hold.config(state="disabled", text="⏸️ Холд")
+                self.is_mic_muted = False
+                self.is_speaker_muted = False
+                self.is_on_hold = False
                 self.current_call_id = None
                 reason = data.get("reason")
                 self.status_var.set(f"Вызов завершен ({reason})" if reason else "Вызов завершен")
@@ -338,7 +388,48 @@ class MicroSipCloneApp:
             self._log(f"Завершение вызова {self.current_call_id}")
             asyncio.run_coroutine_threadsafe(self.client.hangup(self.current_call_id), self.loop)
         self.btn_hangup.config(state="disabled")
+        self.btn_mic.config(state="disabled")
+        self.btn_speaker.config(state="disabled")
+        self.btn_hold.config(state="disabled")
         self.status_var.set("Сброс вызова...")
+
+    def _on_toggle_mic(self):
+        self.is_mic_muted = not self.is_mic_muted
+        if self.is_mic_muted:
+            self.btn_mic.config(text="🔇 Микр. (ВЫКЛ)")
+            self._log("Микрофон отключен (Mute)")
+        else:
+            self.btn_mic.config(text="🎤 Микрофон")
+            self._log("Микрофон включен (Unmute)")
+
+        asyncio.run_coroutine_threadsafe(
+            self.client.mute_mic(self.current_call_id, self.is_mic_muted),
+            self.loop,
+        )
+
+    def _on_toggle_speaker(self):
+        self.is_speaker_muted = not self.is_speaker_muted
+        if self.is_speaker_muted:
+            self.btn_speaker.config(text="🔈 Динам. (ВЫКЛ)")
+            self._log("Динамик отключен (Mute)")
+        else:
+            self.btn_speaker.config(text="🔊 Динамик")
+            self._log("Динамик включен (Unmute)")
+
+        asyncio.run_coroutine_threadsafe(
+            self.client.mute_speaker(self.current_call_id, self.is_speaker_muted),
+            self.loop,
+        )
+
+    def _on_toggle_hold(self):
+        if not self.current_call_id:
+            return
+        action = "Снятие с удержания" if self.is_on_hold else "Постановка на удержание"
+        self._log(f"{action} для вызова {self.current_call_id}")
+        asyncio.run_coroutine_threadsafe(
+            self.client.hold(self.current_call_id),
+            self.loop,
+        )
 
     def _on_close(self):
         self.client.close()

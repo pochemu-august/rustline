@@ -37,6 +37,14 @@ pub struct Call {
 
     /// Disconnect reason text.
     pub last_reason: Option<String>,
+
+    /// Whether local microphone is muted for this call.
+    #[serde(default)]
+    pub is_muted: bool,
+
+    /// Whether local speaker is muted for this call.
+    #[serde(default)]
+    pub is_speaker_muted: bool,
 }
 
 impl Call {
@@ -51,6 +59,8 @@ impl Call {
             duration_secs: 0,
             last_code: None,
             last_reason: None,
+            is_muted: false,
+            is_speaker_muted: false,
         }
     }
 
@@ -65,6 +75,8 @@ impl Call {
             duration_secs: 0,
             last_code: None,
             last_reason: None,
+            is_muted: false,
+            is_speaker_muted: false,
         }
     }
 

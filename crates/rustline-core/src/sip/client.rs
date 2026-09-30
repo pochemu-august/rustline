@@ -130,6 +130,31 @@ impl SipClient {
         }
     }
 
+    /// Set microphone mute state for an active call.
+    pub async fn set_mic_muted(&self, call_id: &str, muted: bool) {
+        let rtp_map = self.active_rtp.lock().await;
+        if let Some((_, Some(audio))) = rtp_map.get(call_id) {
+            audio.set_mic_muted(muted);
+        }
+    }
+
+    /// Set speaker mute state for an active call.
+    pub async fn set_speaker_muted(&self, call_id: &str, muted: bool) {
+        let rtp_map = self.active_rtp.lock().await;
+        if let Some((_, Some(audio))) = rtp_map.get(call_id) {
+            audio.set_speaker_muted(muted);
+        }
+    }
+
+    /// Set call on hold (mutes both mic capture and speaker playback).
+    pub async fn set_hold(&self, call_id: &str, held: bool) {
+        let rtp_map = self.active_rtp.lock().await;
+        if let Some((_, Some(audio))) = rtp_map.get(call_id) {
+            audio.set_mic_muted(held);
+            audio.set_speaker_muted(held);
+        }
+    }
+
     /// Spawn the continuous background UDP packet listener.
     fn spawn_listen_loop(self: Arc<Self>) {
         let socket = self.transport.socket().clone();

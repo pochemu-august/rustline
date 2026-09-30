@@ -281,7 +281,7 @@ impl Engine {
         }))
     }
 
-    /// Handle a `hold` command (stub).
+    /// Handle a `hold` command.
     pub async fn handle_hold(&mut self, params: HoldParams) -> Result<serde_json::Value, String> {
         let call = self
             .calls
@@ -296,6 +296,13 @@ impl Engine {
 
         if !call.transition(new_state) {
             return Err(format!("Cannot hold/unhold call in state {:?}", call.state));
+        }
+
+        let is_held = call.state == CallState::Held;
+
+        // Apply audio hold (mute mic + speaker during hold)
+        if let Some(ref client) = self.sip_client {
+            client.set_hold(&params.call_id, is_held).await;
         }
 
         let _ = self
@@ -315,7 +322,66 @@ impl Engine {
 
         Ok(serde_json::json!({
             "call_id": params.call_id,
-            "status": format!("{:?}", call.state).to_lowercase()
+            "status": format!("{:?}", call.state).to_lowercase(),
+            "held": is_held
+        }))
+    }
+
+    /// Handle a `mute_mic` command.
+    pub async fn handle_mute_mic(
+        &mut self,
+        params: MuteMicParams,
+    ) -> Result<serde_json::Value, String> {
+        let target_call_id = params
+            .call_id
+            .clone()
+            .or_else(|| self.calls.keys().next().cloned())
+            .ok_or_else(|| "No active call found to mute microphone".to_string())?;
+
+        let call = self
+            .calls
+            .get_mut(&target_call_id)
+            .ok_or_else(|| format!("Call {target_call_id} not found"))?;
+
+        let new_muted = params.muted.unwrap_or(!call.is_muted);
+        call.is_muted = new_muted;
+
+        if let Some(ref client) = self.sip_client {
+            client.set_mic_muted(&target_call_id, new_muted).await;
+        }
+
+        Ok(serde_json::json!({
+            "call_id": target_call_id,
+            "mic_muted": new_muted
+        }))
+    }
+
+    /// Handle a `mute_speaker` command.
+    pub async fn handle_mute_speaker(
+        &mut self,
+        params: MuteSpeakerParams,
+    ) -> Result<serde_json::Value, String> {
+        let target_call_id = params
+            .call_id
+            .clone()
+            .or_else(|| self.calls.keys().next().cloned())
+            .ok_or_else(|| "No active call found to mute speaker".to_string())?;
+
+        let call = self
+            .calls
+            .get_mut(&target_call_id)
+            .ok_or_else(|| format!("Call {target_call_id} not found"))?;
+
+        let new_muted = params.muted.unwrap_or(!call.is_speaker_muted);
+        call.is_speaker_muted = new_muted;
+
+        if let Some(ref client) = self.sip_client {
+            client.set_speaker_muted(&target_call_id, new_muted).await;
+        }
+
+        Ok(serde_json::json!({
+            "call_id": target_call_id,
+            "speaker_muted": new_muted
         }))
     }
 

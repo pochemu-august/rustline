@@ -5,6 +5,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -16,6 +17,8 @@ use crate::rtp::session::AudioBuffer;
 pub struct AudioEngine {
     stop_tx: Option<std::sync::mpsc::Sender<()>>,
     playback_buf: AudioBuffer,
+    mic_muted: Arc<AtomicBool>,
+    speaker_muted: Arc<AtomicBool>,
     pub is_running: bool,
 }
 
@@ -26,6 +29,11 @@ impl AudioEngine {
     pub fn new(mic_tx: mpsc::Sender<Vec<i16>>, playback_buf: AudioBuffer) -> Self {
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let p_buf = Arc::clone(&playback_buf);
+        let mic_muted = Arc::new(AtomicBool::new(false));
+        let speaker_muted = Arc::new(AtomicBool::new(false));
+
+        let spk_mute_clone = Arc::clone(&speaker_muted);
+        let mic_mute_clone = Arc::clone(&mic_muted);
 
         std::thread::spawn(move || {
             let host = cpal::default_host();
@@ -35,7 +43,7 @@ impl AudioEngine {
                 Some(device) => {
                     let device_name = device.name().unwrap_or_else(|_| "Default Output".into());
                     info!(device = %device_name, "Initializing audio playback device");
-                    match setup_output_stream(&device, p_buf) {
+                    match setup_output_stream(&device, p_buf, spk_mute_clone) {
                         Ok(stream) => {
                             if let Err(e) = stream.play() {
                                 warn!("Failed to start output stream: {}", e);
@@ -61,7 +69,7 @@ impl AudioEngine {
                 Some(device) => {
                     let device_name = device.name().unwrap_or_else(|_| "Default Input".into());
                     info!(device = %device_name, "Initializing audio capture device");
-                    match setup_input_stream(&device, mic_tx) {
+                    match setup_input_stream(&device, mic_tx, mic_mute_clone) {
                         Ok(stream) => {
                             if let Err(e) = stream.play() {
                                 warn!("Failed to start input stream: {}", e);
@@ -92,6 +100,8 @@ impl AudioEngine {
         Self {
             stop_tx: Some(stop_tx),
             playback_buf,
+            mic_muted,
+            speaker_muted,
             is_running: true,
         }
     }
@@ -99,6 +109,26 @@ impl AudioEngine {
     /// Access the shared playback buffer for received audio.
     pub fn playback_buffer(&self) -> AudioBuffer {
         Arc::clone(&self.playback_buf)
+    }
+
+    /// Set microphone mute state.
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.mic_muted.store(muted, Ordering::SeqCst);
+    }
+
+    /// Set speaker output mute state.
+    pub fn set_speaker_muted(&self, muted: bool) {
+        self.speaker_muted.store(muted, Ordering::SeqCst);
+    }
+
+    /// Check if microphone is currently muted.
+    pub fn is_mic_muted(&self) -> bool {
+        self.mic_muted.load(Ordering::SeqCst)
+    }
+
+    /// Check if speaker output is currently muted.
+    pub fn is_speaker_muted(&self) -> bool {
+        self.speaker_muted.load(Ordering::SeqCst)
     }
 
     /// Stop audio hardware streams.
@@ -117,7 +147,11 @@ impl Drop for AudioEngine {
 }
 
 /// Setup CPAL output stream (Speakers) with 8kHz -> native sample rate upsampling.
-fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyhow::Result<Stream> {
+fn setup_output_stream(
+    device: &cpal::Device,
+    playback_buf: AudioBuffer,
+    speaker_muted: Arc<AtomicBool>,
+) -> anyhow::Result<Stream> {
     let default_config = device.default_output_config()?;
     let sample_rate = default_config.sample_rate().0;
     let channels = default_config.channels() as usize;
@@ -136,6 +170,13 @@ fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyh
         SampleFormat::F32 => device.build_output_stream(
             &default_config.into(),
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                if speaker_muted.load(Ordering::Relaxed) {
+                    for sample in data.iter_mut() {
+                        *sample = 0.0;
+                    }
+                    return;
+                }
+
                 let mut buf_lock = playback_buf.lock().ok();
 
                 for frame in data.chunks_mut(channels) {
@@ -178,6 +219,7 @@ fn setup_output_stream(device: &cpal::Device, playback_buf: AudioBuffer) -> anyh
 fn setup_input_stream(
     device: &cpal::Device,
     mic_tx: mpsc::Sender<Vec<i16>>,
+    mic_muted: Arc<AtomicBool>,
 ) -> anyhow::Result<Stream> {
     let default_config = device.default_input_config()?;
     let sample_rate = default_config.sample_rate().0;
@@ -199,6 +241,7 @@ fn setup_input_stream(
         SampleFormat::F32 => device.build_input_stream(
             &default_config.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let is_muted = mic_muted.load(Ordering::Relaxed);
                 for frame in data.chunks(channels) {
                     let mono_in: f32 = if channels == 1 {
                         frame[0]
@@ -220,7 +263,11 @@ fn setup_input_stream(
                         input_sum = 0.0;
                         input_count = 0;
 
-                        let pcm16 = (avg.clamp(-1.0, 1.0) * 32767.0) as i16;
+                        let pcm16 = if is_muted {
+                            0i16
+                        } else {
+                            (avg.clamp(-1.0, 1.0) * 32767.0) as i16
+                        };
                         accumulator.push(pcm16);
 
                         if accumulator.len() >= SAMPLES_PER_FRAME {
