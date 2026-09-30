@@ -76,11 +76,15 @@ impl SipClient {
     }
 
     /// Start RTP media streaming and CPAL audio hardware pipeline for a call.
-    async fn start_media_session(&self, call_id: &str, remote_rtp: Option<std::net::SocketAddr>) {
+    async fn start_media_session(
+        &self,
+        call_id: &str,
+        remote_rtp: Option<std::net::SocketAddr>,
+        local_rtp_port: u16,
+    ) {
         let local_ip = self.transport.local_ip().to_string();
-        let local_rtp_port = 10030;
 
-        info!(%call_id, ?remote_rtp, "Starting media pipeline (RTP + CPAL Audio)");
+        info!(%call_id, ?remote_rtp, local_rtp_port, "Starting media pipeline (RTP + CPAL Audio)");
 
         let playback_buf = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
         match rustline_media::RtpSession::start(
@@ -254,7 +258,11 @@ impl SipClient {
                     // Directly respond with 200 OK + SDP (in-dialog To header already has our local tag)
                     let local_ip = self.transport.local_ip().to_string();
                     let local_port = self.transport.local_port();
-                    let sdp = build_sdp(&local_ip, 10030);
+                    let local_rtp_port = {
+                        let active = self.dialogs.lock().await;
+                        active.get(&call_id).map(|d| d.local_rtp_port).unwrap_or(10030)
+                    };
+                    let sdp = build_sdp(&local_ip, local_rtp_port);
                     let sdp_len = sdp.len();
 
                     let reply = format!(
@@ -604,6 +612,7 @@ impl SipClient {
         let dialog = SipDialog::new_outbound(target, &local_ip);
         let call_id = dialog.call_id.clone();
         let local_tag = dialog.local_tag.clone();
+        let local_rtp_port = dialog.local_rtp_port;
         let target_str = target.to_string();
         let domain_str = domain.to_string();
 
@@ -630,6 +639,7 @@ impl SipClient {
                     &domain_str,
                     &local_ip,
                     local_port,
+                    local_rtp_port,
                     resp_rx,
                 )
                 .await
@@ -668,6 +678,7 @@ impl SipClient {
         domain: &str,
         local_ip: &str,
         local_port: u16,
+        local_rtp_port: u16,
         mut resp_rx: mpsc::UnboundedReceiver<rsip::Response>,
     ) -> Result<()> {
         let server_port = if self.config.port == 0 {
@@ -676,7 +687,7 @@ impl SipClient {
             self.config.port
         };
         let request_uri = format!("sip:{}@{}:{}", target, domain, server_port);
-        let sdp = build_sdp(local_ip, 10030);
+        let sdp = build_sdp(local_ip, local_rtp_port);
 
         // Step 1: Send initial INVITE
         let branch = format!("z9hG4bK-{}", rand_u32());
@@ -834,7 +845,7 @@ impl SipClient {
                     )));
 
                 let remote_rtp = parse_sdp_audio_endpoint(res.body());
-                self.start_media_session(call_id, remote_rtp).await;
+                self.start_media_session(call_id, remote_rtp, local_rtp_port).await;
                 break;
             } else if code >= 400 {
                 // Call rejected / busy
@@ -874,7 +885,8 @@ impl SipClient {
 
         let local_ip = self.transport.local_ip().to_string();
         let local_port = self.transport.local_port();
-        let sdp = build_sdp(&local_ip, 10030);
+        let local_rtp_port = dialog.local_rtp_port;
+        let sdp = build_sdp(&local_ip, local_rtp_port);
         let sdp_len = sdp.len();
 
         let via = dialog.incoming_via.unwrap_or_default();
@@ -931,7 +943,8 @@ impl SipClient {
             )));
 
         let remote_rtp = dialog.remote_rtp_addr;
-        self.start_media_session(call_id, remote_rtp).await;
+        let local_rtp_port = dialog.local_rtp_port;
+        self.start_media_session(call_id, remote_rtp, local_rtp_port).await;
 
         Ok(())
     }

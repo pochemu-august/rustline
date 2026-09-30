@@ -129,11 +129,11 @@ impl RtpSession {
 
                         // Push decoded PCM samples into playback buffer
                         if let Ok(mut lock) = recv_playback.lock() {
-                            // Keep buffer small (at most ~200ms = 1600 samples) to prevent latency buildup
-                            if lock.len() > 1600 {
-                                lock.clear();
-                            }
                             lock.extend(pcm_samples);
+                            // Drop oldest samples if buffer exceeds ~200ms (1600 samples) to prevent latency buildup without clicking
+                            while lock.len() > 1600 {
+                                lock.pop_front();
+                            }
                         }
                     }
                 }
@@ -150,16 +150,26 @@ impl RtpSession {
         let mut stop_rx2 = stop_tx.subscribe();
 
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_millis(20));
-            // Missed frame ticker behavior
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
             while send_running.load(Ordering::Relaxed) {
                 tokio::select! {
                     _ = stop_rx2.recv() => {
                         break;
                     }
-                    _ = ticker.tick() => {
+                    chunk_res = tokio::time::timeout(Duration::from_millis(25), mic_rx.recv()) => {
+                        let pcm_chunk = match chunk_res {
+                            Ok(Some(mut chunk)) => {
+                                // If hardware captured faster than network or during thread stall, drain to freshest
+                                while let Ok(newer) = mic_rx.try_recv() {
+                                    if !newer.is_empty() {
+                                        chunk = newer;
+                                    }
+                                }
+                                chunk
+                            }
+                            Ok(None) => break,
+                            Err(_) => vec![0i16; SAMPLES_PER_FRAME],
+                        };
+
                         let target = {
                             let rem = send_remote.lock().await;
                             *rem
@@ -168,12 +178,6 @@ impl RtpSession {
                         let dest = match target {
                             Some(d) => d,
                             None => continue, // Waiting for remote address
-                        };
-
-                        // Get 160 PCM samples from mic, or send comfort silence if mic has no data
-                        let pcm_chunk = match mic_rx.try_recv() {
-                            Ok(chunk) if !chunk.is_empty() => chunk,
-                            _ => vec![0i16; SAMPLES_PER_FRAME],
                         };
 
                         // Encode to G.711 A-law (PT 8)

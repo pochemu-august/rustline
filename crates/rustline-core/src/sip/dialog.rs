@@ -54,7 +54,7 @@ impl SipDialog {
             incoming_to: None,
             is_inbound: false,
             remote_rtp_addr: None,
-            local_rtp_port: 10030,
+            local_rtp_port: allocate_rtp_port(),
         }
     }
 
@@ -85,9 +85,30 @@ impl SipDialog {
             incoming_to: Some(to),
             is_inbound: true,
             remote_rtp_addr: None,
-            local_rtp_port: 10030,
+            local_rtp_port: allocate_rtp_port(),
         }
     }
+}
+
+/// Dynamically allocate an available even UDP port for RTP (e.g. 10030, 10032, ...).
+pub fn allocate_rtp_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(10030);
+
+    for _ in 0..50 {
+        let port = NEXT_PORT.fetch_add(2, Ordering::SeqCst);
+        let port = if !(10030..=10200).contains(&port) {
+            NEXT_PORT.store(10032, Ordering::SeqCst);
+            10030
+        } else {
+            port
+        };
+        // Verify port can be bound on this system
+        if std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() {
+            return port;
+        }
+    }
+    10030
 }
 
 /// Helper to generate a random 32-bit unsigned integer using uuid.
